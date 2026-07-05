@@ -8,3 +8,8 @@ api_key = "ollama"  # any non-empty value works for Ollama; real key for cloud p
 model = "qwen3-vl:8b"
 prompt_version = "v1"
 effort_level = "low"  # "none" | "low" | "medium" | "high"; omit for providers that don't support reasoning_effort
+
+[embed]
+base_url = "http://localhost:11434/v1"
+api_key = "ollama"
+model = "bge-m3"
