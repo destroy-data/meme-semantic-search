@@ -1,0 +1,11 @@
+[project]
+name = "meme-semantic-search"
+version = "0.1.0"
+description = "The dankest meme semantic search in da hood."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "imagehash>=4.3.2",
+    "pillow>=12.3.0",
+    "sqlite-vec>=0.1.9",
+]
