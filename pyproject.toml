@@ -5,6 +5,7 @@ description = "The dankest meme semantic search in da hood."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "dearpygui>=2.3.1",
     "imagehash>=4.3.2",
     "pillow>=12.3.0",
     "sqlite-vec>=0.1.9",
