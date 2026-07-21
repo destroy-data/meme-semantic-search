@@ -130,7 +130,7 @@ def request_description(cfg: dict, prompt: str, image: str) -> str:
 
 
 def describe(
-    con: sqlite3.Connection, cfg: dict, retry_failed: bool, limit: int
+    con: sqlite3.Connection, cfg: dict, retry_failed: bool, limit: int, any_effort: bool
 ) -> None:
     version = cfg["prompt_version"]
     model = cfg["model"]
@@ -141,6 +141,10 @@ def describe(
     # equality correctly. By default any existing row (success or failure) counts
     # as done; --retry-failed only counts successes, so failures get re-attempted.
     dedup_filter = "AND d.status = 'described'" if retry_failed else ""
+    # --any-effort: a description under the same (model, prompt) counts as done
+    # regardless of effort_level, so effort experiments don't trigger re-runs.
+    effort_filter = "" if any_effort else "AND d.effort_level IS ?"
+    params = [model, version] if any_effort else [model, version, effort]
     rows = con.execute(
         f"""
         SELECT m.hash, m.path FROM memes m
@@ -150,12 +154,12 @@ def describe(
               WHERE d.hash = m.hash
                 AND d.model = ?
                 AND d.prompt_version = ?
-                AND d.effort_level IS ?
+                {effort_filter}
                 {dedup_filter}
           )
         ORDER BY m.hash
         """,
-        (model, version, effort),
+        params,
     ).fetchall()
     if limit:
         rows = rows[:limit]
@@ -199,6 +203,11 @@ def main() -> None:
         help="also re-pick rows with status=failed_describe",
     )
     parser.add_argument("--limit", type=int, default=0, help="describe at most N memes")
+    parser.add_argument(
+        "--any-effort",
+        action="store_true",
+        help="skip memes already described with the same model+prompt at any effort_level",
+    )
     parser.add_argument("--model", help="override [describe].model from config")
     parser.add_argument("--effort", help="override [describe].effort_level from config")
     args = parser.parse_args()
@@ -212,7 +221,7 @@ def main() -> None:
         cfg["describe"]["effort_level"] = args.effort
 
     con = connect(cfg["db_path"])
-    describe(con, cfg["describe"], args.retry_failed, args.limit)
+    describe(con, cfg["describe"], args.retry_failed, args.limit, args.any_effort)
     con.close()
 
 

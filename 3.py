@@ -59,25 +59,41 @@ def embedding_text(desc: dict) -> str:
 def embed(
     con: sqlite3.Connection, describe_cfg: dict, embed_cfg: dict, limit: int
 ) -> None:
-    # Source descriptions are the ones produced by the current [describe] config
-    # (model + prompt_version + effort_level), so config decides which variant
-    # gets indexed when a meme was described multiple times for comparison.
+    # Per meme, prefer the description matching [describe] exactly; fall back to
+    # the same model with any effort, then to any model. Prompt_version stays
+    # strict — a prompt swap is an intentional experiment, not a fallback axis.
     rows = con.execute(
         """
-        SELECT m.hash, d.description_json FROM memes m
-        JOIN descriptions d ON d.hash = m.hash
-        WHERE m.perceptual_duplicate_of IS NULL
-          AND d.status = 'described'
-          AND d.model = ?
-          AND d.prompt_version = ?
-          AND d.effort_level IS ?
-        ORDER BY m.hash
+        WITH ranked AS (
+            SELECT
+                m.hash,
+                d.description_json,
+                ROW_NUMBER() OVER (
+                    PARTITION BY m.hash
+                    ORDER BY
+                        CASE
+                            WHEN d.model = :model
+                             AND IFNULL(d.effort_level, '') = IFNULL(:effort, '')
+                                THEN 1
+                            WHEN d.model = :model THEN 2
+                            ELSE 3
+                        END,
+                        d.id DESC
+                ) AS rn
+            FROM memes m
+            JOIN descriptions d ON d.hash = m.hash
+            WHERE m.perceptual_duplicate_of IS NULL
+              AND d.status = 'described'
+              AND d.prompt_version = :prompt
+        )
+        SELECT hash, description_json FROM ranked WHERE rn = 1
+        ORDER BY hash
         """,
-        (
-            describe_cfg["model"],
-            describe_cfg["prompt_version"],
-            describe_cfg.get("effort_level"),
-        ),
+        {
+            "model": describe_cfg["model"],
+            "prompt": describe_cfg["prompt_version"],
+            "effort": describe_cfg.get("effort_level"),
+        },
     ).fetchall()
     already = {h for (h,) in con.execute("SELECT hash FROM memes_vec")}
     rows = [(h, d) for h, d in rows if h not in already]
