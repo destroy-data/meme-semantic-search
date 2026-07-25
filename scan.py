@@ -4,13 +4,13 @@ import argparse
 import hashlib
 import sqlite3
 import sys
-import tomllib
 from collections import defaultdict
 from pathlib import Path
 
 import imagehash
-import sqlite_vec
 from PIL import Image
+
+import common
 
 EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 # Rep-selection prefers the row with the most invested pipeline work: embedded
@@ -19,16 +19,6 @@ EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 RANK_EMBEDDED = 2
 RANK_DESCRIBED = 1
 RANK_NONE = 0
-
-
-def connect(db_path: str) -> sqlite3.Connection:
-    con = sqlite3.connect(db_path)
-    con.enable_load_extension(True)
-    sqlite_vec.load(con)
-    con.enable_load_extension(False)
-    con.executescript(Path(__file__).with_name("schema.sql").read_text())
-    con.execute("PRAGMA foreign_keys = ON")
-    return con
 
 
 def ingest(con: sqlite3.Connection, image_dir: Path) -> None:
@@ -137,9 +127,8 @@ def regroup(con: sqlite3.Connection, threshold: int) -> None:
     )
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Stage 1: scan & dedup")
-    parser.add_argument("--config", default="config.toml")
+def add_arguments(parser: argparse.ArgumentParser) -> None:
+    common.add_config_argument(parser)
     parser.add_argument(
         "--regroup-only",
         action="store_true",
@@ -150,18 +139,24 @@ def main() -> None:
         action="store_true",
         help="delete rows whose path no longer exists on disk",
     )
-    args = parser.parse_args()
 
-    with open(args.config, "rb") as f:
-        cfg = tomllib.load(f)
 
-    con = connect(cfg["db_path"])
+def run(args: argparse.Namespace, cfg: dict) -> None:
+    # Scan is the stage that creates the DB, so it's the one applying schema.sql.
+    con = common.connect(cfg["db_path"], init_schema=True)
     if args.prune_missing:
         prune_missing(con)
     if not args.regroup_only:
         ingest(con, Path(cfg["image_dir"]).expanduser())
     regroup(con, cfg["phash_threshold"])
     con.close()
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Stage 1: scan & dedup")
+    add_arguments(parser)
+    args = parser.parse_args(argv)
+    run(args, common.load_config(args.config))
 
 
 if __name__ == "__main__":

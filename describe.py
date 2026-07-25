@@ -7,12 +7,12 @@ import json
 import sqlite3
 import sys
 import time
-import tomllib
 import urllib.request
 from pathlib import Path
 
-import sqlite_vec
 from PIL import Image
+
+import common
 
 HUMOR_TYPES = [
     "irony",
@@ -33,7 +33,7 @@ SCHEMA = {
         "transcription": {"type": "string"},
         "template": {"type": "string"},
         "scene": {"type": "string"},
-        "usage_context": {"type": "string"},
+        "the_clue": {"type": "string"},
         "keywords": {
             "type": "array",
             "items": {"type": "string"},
@@ -52,7 +52,7 @@ SCHEMA = {
         "transcription",
         "template",
         "scene",
-        "usage_context",
+        "the_clue",
         "keywords",
         "humor_type",
     ],
@@ -63,17 +63,10 @@ MIME = {
     ".png": "image/png",
     ".webp": "image/webp",
 }
-MAX_SIDE = 1568  # larger images are downscaled before sending to the VLM
-REQUEST_TIMEOUT = 138
-
-
-def connect(db_path: str) -> sqlite3.Connection:
-    con = sqlite3.connect(db_path)
-    con.enable_load_extension(True)
-    sqlite_vec.load(con)
-    con.enable_load_extension(False)
-    con.execute("PRAGMA foreign_keys = ON")
-    return con
+MAX_SIDE = 1440  # larger images are downscaled before sending to the VLM
+# Kept separate from common.REQUEST_TIMEOUT: a reasoning VLM call is a different
+# beast from an embedding call and will want its own budget.
+REQUEST_TIMEOUT = 69  # Nice
 
 
 def image_data_url(path: Path) -> str:
@@ -129,8 +122,13 @@ def request_description(cfg: dict, prompt: str, image: str) -> str:
     return body["choices"][0]["message"]["content"]
 
 
-def describe(
-    con: sqlite3.Connection, cfg: dict, retry_failed: bool, limit: int, any_effort: bool
+def describe_memes(
+    con: sqlite3.Connection,
+    cfg: dict,
+    *,
+    retry_failed: bool = False,
+    limit: int = 0,
+    any_effort: bool = False,
 ) -> None:
     version = cfg["prompt_version"]
     model = cfg["model"]
@@ -194,9 +192,8 @@ def describe(
         )
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Stage 2: describe memes with a VLM")
-    parser.add_argument("--config", default="config.toml")
+def add_arguments(parser: argparse.ArgumentParser) -> None:
+    common.add_config_argument(parser)
     parser.add_argument(
         "--retry-failed",
         action="store_true",
@@ -210,19 +207,30 @@ def main() -> None:
     )
     parser.add_argument("--model", help="override [describe].model from config")
     parser.add_argument("--effort", help="override [describe].effort_level from config")
-    args = parser.parse_args()
 
-    with open(args.config, "rb") as f:
-        cfg = tomllib.load(f)
 
+def run(args: argparse.Namespace, cfg: dict) -> None:
     if args.model:
         cfg["describe"]["model"] = args.model
     if args.effort:
         cfg["describe"]["effort_level"] = args.effort
 
-    con = connect(cfg["db_path"])
-    describe(con, cfg["describe"], args.retry_failed, args.limit, args.any_effort)
+    con = common.connect(cfg["db_path"])
+    describe_memes(
+        con,
+        cfg["describe"],
+        retry_failed=args.retry_failed,
+        limit=args.limit,
+        any_effort=args.any_effort,
+    )
     con.close()
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Stage 2: describe memes with a VLM")
+    add_arguments(parser)
+    args = parser.parse_args(argv)
+    run(args, common.load_config(args.config))
 
 
 if __name__ == "__main__":

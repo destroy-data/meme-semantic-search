@@ -1,51 +1,19 @@
 """Stage 4: search memes with hybrid vector + FTS retrieval fused via RRF."""
 
 import argparse
-import json
-import math
 import re
 import shutil
 import sqlite3
 import subprocess
 import sys
-import tomllib
-import urllib.request
 
 import sqlite_vec
 
-REQUEST_TIMEOUT = 69  # Nice
-EMBEDDING_DIM = 1024
+import common
+
 CANDIDATES = 69  # per-list pool fed into RRF
 RRF_K = 60
 VIEWERS = ["imv", "feh", "nsxiv", "loupe"]
-
-
-def connect(db_path: str) -> sqlite3.Connection:
-    con = sqlite3.connect(db_path)
-    con.enable_load_extension(True)
-    sqlite_vec.load(con)
-    con.enable_load_extension(False)
-    con.execute("PRAGMA foreign_keys = ON")
-    return con
-
-
-def request_embedding(cfg: dict, text: str) -> list[float]:
-    payload = {"model": cfg["model"], "input": text}
-    req = urllib.request.Request(
-        cfg["base_url"].rstrip("/") + "/embeddings",
-        data=json.dumps(payload).encode(),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {cfg['api_key']}",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-        body = json.load(resp)
-    embedding = body["data"][0]["embedding"]
-    if len(embedding) != EMBEDDING_DIM:
-        raise ValueError(f"expected {EMBEDDING_DIM} dims, got {len(embedding)}")
-    norm = math.sqrt(sum(x * x for x in embedding))
-    return [x / norm for x in embedding]
 
 
 def fts_query(text: str) -> str:
@@ -90,7 +58,7 @@ def fts_hits(con: sqlite3.Connection, query: str) -> list[str]:
 def search(
     con: sqlite3.Connection, embed_cfg: dict, query: str, top_n: int
 ) -> list[str]:
-    vector = request_embedding(embed_cfg, query)
+    vector = common.request_embedding(embed_cfg, query)
     scores: dict[str, float] = {}
     for hits in (vec_hits(con, vector), fts_hits(con, query)):
         for rank, digest in enumerate(hits, start=1):
@@ -102,24 +70,21 @@ def search(
     ]
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Stage 4: search memes")
+def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "query",
         nargs="+",
         help="free-text query (Polish or English), no quoting needed",
     )
-    parser.add_argument("--config", default="config.toml")
+    common.add_config_argument(parser)
     parser.add_argument("-n", "--top", type=int, default=10, help="number of results")
     parser.add_argument(
         "--show", action="store_true", help="open results in an image viewer"
     )
-    args = parser.parse_args()
 
-    with open(args.config, "rb") as f:
-        cfg = tomllib.load(f)
 
-    con = connect(cfg["db_path"])
+def run(args: argparse.Namespace, cfg: dict) -> None:
+    con = common.connect(cfg["db_path"])
     paths = search(con, cfg["embed"], " ".join(args.query), args.top)
     con.close()
 
@@ -133,6 +98,13 @@ def main() -> None:
             print(
                 f"no image viewer found (tried: {', '.join(VIEWERS)})", file=sys.stderr
             )
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Stage 4: search memes")
+    add_arguments(parser)
+    args = parser.parse_args(argv)
+    run(args, common.load_config(args.config))
 
 
 if __name__ == "__main__":

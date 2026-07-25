@@ -1,17 +1,13 @@
 """Stage 5: Dear PyGui GUI over stage 4 search."""
 
 import argparse
-import importlib
 import json
 import os
-import sqlite3
-import tomllib
 
 import dearpygui.dearpygui as dpg
-import sqlite_vec
 
-mod4 = importlib.import_module("4")
-search = mod4.search
+import common
+import search as search_stage
 
 
 def variant_label(model: str, prompt_version: str, effort_level: str | None) -> str:
@@ -41,18 +37,6 @@ def description_fields(raw: str | None) -> list[tuple[str | None, str]]:
     return fields or [(None, "(pusty opis)")]
 
 
-def connect(db_path: str) -> sqlite3.Connection:
-    # check_same_thread=False: DPG runs callbacks on its render thread, not the
-    # thread that built the App. Only one callback runs at a time, so there's no
-    # actual concurrent access to worry about.
-    con = sqlite3.connect(db_path, check_same_thread=False)
-    con.enable_load_extension(True)
-    sqlite_vec.load(con)
-    con.enable_load_extension(False)
-    con.execute("PRAGMA foreign_keys = ON")
-    return con
-
-
 # DPG 2.x autoloads all Unicode ranges from a bound font, so we only need to
 # point it at a TTF that actually has Polish glyphs (default DPG font doesn't).
 FONT_CANDIDATES = [
@@ -67,8 +51,9 @@ FONT_CANDIDATES = [
 class App:
     def __init__(self, cfg: dict) -> None:
         self.cfg = cfg
-        self.con = connect(cfg["db_path"])
+        self.con = common.connect(cfg["db_path"], check_same_thread=False)
         self.paths: list[str] = []
+        self.current_idx: int = -1
         self.current_tex: int | str | None = None
         self.variants: dict[str, str | None] = {}
 
@@ -82,6 +67,12 @@ class App:
                 dpg.bind_font(f)
 
         dpg.add_texture_registry(tag="tex_reg")
+
+        # Down/Up arrows step through results. Skip when the query box has focus
+        # so arrow keys still move the text caret while typing.
+        with dpg.handler_registry():
+            dpg.add_key_press_handler(dpg.mvKey_Down, callback=self.on_next)
+            dpg.add_key_press_handler(dpg.mvKey_Up, callback=self.on_prev)
 
         with dpg.window(tag="main", no_title_bar=True, no_resize=True, no_move=True):
             with dpg.group(horizontal=True):
@@ -144,7 +135,7 @@ class App:
             return
         dpg.set_value("status", f"szukam „{query}”…")
         try:
-            paths = search(self.con, self.cfg["embed"], query, n)
+            paths = search_stage.search(self.con, self.cfg["embed"], query, n)
         except Exception as e:
             print(f"[dbg] search error: {e}", flush=True)
             dpg.set_value("status", f"błąd: {e}")
@@ -155,10 +146,12 @@ class App:
         items = [f"{i + 1:>3}. {os.path.basename(p)}" for i, p in enumerate(paths)]
         dpg.configure_item("results", items=items)
         if paths:
+            self.current_idx = 0
             dpg.set_value("results", items[0])
             self.show(paths[0])
             dpg.set_value("status", f"{len(paths)} wyników")
         else:
+            self.current_idx = -1
             dpg.set_value("status", "brak wyników")
             self.clear_preview()
 
@@ -184,7 +177,26 @@ class App:
         except (ValueError, AttributeError):
             return
         if 0 <= idx < len(self.paths):
+            self.current_idx = idx
             self.show(self.paths[idx])
+
+    def select_index(self, idx: int) -> None:
+        if not (0 <= idx < len(self.paths)):
+            return
+        self.current_idx = idx
+        dpg.set_value("results", f"{idx + 1:>3}. {os.path.basename(self.paths[idx])}")
+        self.show(self.paths[idx])
+
+    def on_next(self, *_: object) -> None:
+        # Let arrow keys drive the text caret while the query box is focused.
+        if dpg.is_item_focused("query"):
+            return
+        self.select_index(self.current_idx + 1)
+
+    def on_prev(self, *_: object) -> None:
+        if dpg.is_item_focused("query"):
+            return
+        self.select_index(self.current_idx - 1)
 
     def show(self, path: str) -> None:
         try:
@@ -276,15 +288,19 @@ class App:
         dpg.destroy_context()
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Stage 5: search GUI (Dear PyGui)")
-    parser.add_argument("--config", default="config.toml")
-    args = parser.parse_args()
+def add_arguments(parser: argparse.ArgumentParser) -> None:
+    common.add_config_argument(parser)
 
-    with open(args.config, "rb") as f:
-        cfg = tomllib.load(f)
 
+def run(args: argparse.Namespace, cfg: dict) -> None:
     App(cfg).run()
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Stage 5: search GUI (Dear PyGui)")
+    add_arguments(parser)
+    args = parser.parse_args(argv)
+    run(args, common.load_config(args.config))
 
 
 if __name__ == "__main__":
