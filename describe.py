@@ -358,7 +358,9 @@ def describe_memes(
                     f"{USAGE_LIMIT_WAIT // 60} min before retrying {Path(path).name}: {e}"
                 )
                 time.sleep(USAGE_LIMIT_WAIT)
-            except Exception as e:
+            # Any other error is this image's failure: recorded and moved past,
+            # since a single bad image must never kill a run.
+            except Exception as e:  # noqa: BLE001
                 con.execute(
                     "INSERT OR REPLACE INTO descriptions "
                     "(hash, description_json, prompt_version, model, effort_level, status, error) "

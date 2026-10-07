@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import time
 
@@ -98,7 +99,7 @@ def copy_image_to_clipboard(path: str) -> str:
         with open(path, "rb") as fh:
             # Both tools daemonize themselves once they own the selection.
             subprocess.run(cmd, stdin=fh, check=True, timeout=5)
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         return f"kopiowanie nie wyszło: {e}"
     return f"skopiowano obrazek: {os.path.basename(path)}"
 
@@ -281,7 +282,9 @@ class App:
             return
         try:
             paths = search_stage.search(self.con, self.cfg["embed"], query, self.top_n)
-        except Exception as e:
+        # Endpoint down or timing out (OSError), a malformed or wrong-sized
+        # embedding response (ValueError, KeyError), or a DB hiccup.
+        except (OSError, ValueError, KeyError, sqlite3.Error) as e:
             dpg.set_value("status", f"błąd: {e}")
             return
 
@@ -495,11 +498,12 @@ class App:
         )
 
     def show(self, path: str) -> None:
-        try:
-            w, h, _ch, data = dpg.load_image(path)
-        except Exception as e:
-            dpg.set_value("status", f"nie mogę wczytać: {e}")
+        # load_image reports an unreadable file by returning None, not raising.
+        loaded = dpg.load_image(path)
+        if loaded is None:
+            dpg.set_value("status", f"nie mogę wczytać: {path}")
             return
+        w, h, _ch, data = loaded
 
         new_tex = dpg.add_static_texture(
             width=w, height=h, default_value=data, parent="tex_reg"

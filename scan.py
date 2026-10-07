@@ -35,7 +35,10 @@ def ingest(con: sqlite3.Connection, image_dir: Path) -> None:
         try:
             with Image.open(file) as img:
                 phash = str(imagehash.phash(img))
-        except Exception as e:
+        # Pillow fails on broken files with whatever its decoder raises (OSError,
+        # ValueError, SyntaxError, DecompressionBombError...); none of it may
+        # stop the walk.
+        except Exception as e:  # noqa: BLE001
             errors += 1
             print(f"skipping {file}: {e}", file=sys.stderr)
             continue
