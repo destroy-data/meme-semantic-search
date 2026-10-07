@@ -96,7 +96,8 @@ def embed_descriptions(
             )
             con.commit()
             done += 1
-        except Exception as e:
+        # Logged and re-picked by the next run, so nothing here may stop the loop.
+        except Exception as e:  # noqa: BLE001
             con.rollback()
             failed += 1
             print(

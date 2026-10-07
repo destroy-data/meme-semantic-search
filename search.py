@@ -93,7 +93,7 @@ def run(args: argparse.Namespace, cfg: dict) -> None:
     if args.show and paths:
         viewer = next((v for v in VIEWERS if shutil.which(v)), None)
         if viewer:
-            subprocess.run([viewer, *paths])
+            subprocess.run([viewer, *paths], check=False)  # viewer's exit code is noise
         else:
             print(
                 f"no image viewer found (tried: {', '.join(VIEWERS)})", file=sys.stderr
