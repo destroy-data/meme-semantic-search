@@ -12,3 +12,8 @@ wheels/
 memes.db
 memes/
 config.toml
+
+# Local-only: API keys, run logs, Claude Code session state
+xai
+limit
+.claude/
