@@ -13,7 +13,14 @@ import common
 
 def embedding_text(desc: dict) -> str:
     tags = ", ".join(desc.get("keywords", []) + desc.get("humor_type", []))
+    # Template names drift badly between runs ("Two Marmots" / "Marmot Holding
+    # Back Friend" / ...), which makes them unreliable for FTS's exact-token
+    # matching but fine for the vector, where near-synonyms land close together.
+    # "unknown" is dropped: it carries no meaning and, being shared by a large
+    # share of memes, would pull all of them toward one another.
+    template = desc.get("template", "")
     parts = [
+        "" if template == "unknown" else template,
         desc.get("scene", ""),
         desc.get("the_clue", ""),
         desc.get("transcription", ""),
