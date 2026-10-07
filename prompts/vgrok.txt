@@ -17,15 +17,15 @@ Pola JSON-a:
   liczniki (768, 25K), przyciski, watermarki, logo.
 - **template**: nazwa szablonu ("Distracted Boyfriend", "Shiba Doge",
   "Anakin & Padmé 4-panel" itd.) lub dokładnie "unknown". **Nigdy pusty string.**
-- **scene**: co widać, bez interpretacji intencji.
-- **usage_context**: **zawsze po polsku**, maks. 2-3 zdania. Zaczynaj od
+- **scene**: opisz hasłowo co widać, bez interpretacji intencji.
+- **the_clue**: **zawsze po polsku**, maks. 2-3 zdania. Zaczynaj od
   "Wysyłany gdy..." lub "Reakcja na...". Opisz **konkretny wyzwalacz** i **jak
   działa puenta** (gra słów, do kogo mem jest wymierzony, co ma wywoływać).
   Zero ogólników typu "humorystyczny obrazek wyrażający frustrację".
-- **keywords**: 6-10 tagów. **Kluczowe pojęcia w obu językach** (`kobieta`
+- **keywords**: 6-10 pojęć, **każde w obu językach** — maks. 10 tagów
+  polskich i 10 angielskich, czyli do 20 w tablicy (`kobieta`
   + `woman`, `kuchnia` + `kitchen`, `Wiedźmin` + `Witcher`). **Portale w
-  obu formach jeśli mają skrót**: JBZD to skrót od "jeb z dzidy" — dla mema
-  z JBZD daj oba: `jbzd` i `jeb z dzidy`.
+  obu formach jeśli mają skrót**: JBZD to skrót od "jeb z dzidy" — używaj tej formy.
 - **humor_type**: 1-2 z listy: irony, absurd, dark, cringe, wholesome,
   relatable, situational, shitpost, savage, political, meta. Edgy bez
   podwójnego dna = "shitpost" (+ "dark"/"political" jeśli pasuje). "savage" =
@@ -37,8 +37,8 @@ Przykład 1 (edgy dark):
 {
   "transcription": "MY FIRST GAME WAS LIKE MY FIRST SEXUAL EXPERIENCE\n\nI ENDED UP BLEEDING PROFUSELY BUT AT LEAST MY DAD CAME",
   "template": "unknown",
-  "scene": "Zdjęcie młodej zawodniczki rugby z zakrwawionym nosem i twarzą po meczu. Klasyczny image macro z białym tekstem na górze i dole.",
-  "usage_context": "Wysyłany jako edgy dark-humor żart z podtekstem kazirodztwa, ukryty pod pozorem porównania pierwszego meczu do pierwszego seksu. Puenta polega na dwuznaczności 'came' — 'przyszedł na mecz' vs 'doszedł seksualnie', sugerująca że ojciec był sprawcą pierwszego doświadczenia córki.",
+  "scene": "Zawodniczka rugby, zakrwawiona twarz po meczu; image macro, biały tekst góra i dół.",
+  "the_clue": "Wysyłany jako edgy dark-humor żart z podtekstem kazirodztwa, ukryty pod pozorem porównania pierwszego meczu do pierwszego seksu. Puenta polega na dwuznaczności 'came' — 'przyszedł na mecz' vs 'doszedł seksualnie', sugerująca że ojciec był sprawcą pierwszego doświadczenia córki.",
   "keywords": ["rugby", "dark humor", "ciemny humor", "edgy", "incest", "kazirodztwo", "dad came", "ojciec", "father", "first time", "shitpost"],
   "humor_type": ["dark", "shitpost"]
 }
@@ -47,8 +47,8 @@ Przykład 2 (meta, filozoficzny — nie każdy mem jest edgy):
 {
   "transcription": "mommy has transcended desire and thus wants nothing\n\nReaders added context they thought people might want to know\n\nMommy, having desired to inform us of this information, has yet to escape the wheel of Samsara.",
   "template": "Twitter Community Notes",
-  "scene": "Zrzut tweeta z selfie rudowłosej alt/e-girl kobiety. Pod tweetem Community Notes dodaje ironiczny komentarz filozoficzny.",
-  "usage_context": "Wysyłany jako meta-żart o Community Notes — użytkowniczka ogłasza że transcendowała pragnienia, a Community Notes bezlitośnie zauważa że sam akt napisania tego posta jest pragnieniem, więc dalej krąży w kole samsary. Elegancki logiczny gotcha oparty na filozofii buddyjskiej.",
+  "scene": "Zrzut tweeta, selfie alt/e-girl kobiety; pod spodem dopisek Community Notes.",
+  "the_clue": "Wysyłany jako meta-żart o Community Notes — użytkowniczka ogłasza że transcendowała pragnienia, a Community Notes bezlitośnie zauważa że sam akt napisania tego posta jest pragnieniem, więc dalej krąży w kole samsary. Elegancki logiczny gotcha oparty na filozofii buddyjskiej.",
   "keywords": ["Community Notes", "Twitter", "X", "Samsara", "koło samsary", "Buddhism", "buddyzm", "mommy", "e-girl", "meta humor", "filozofia", "pragnienie", "desire"],
   "humor_type": ["meta", "irony"]
 }
