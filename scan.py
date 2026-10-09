@@ -22,15 +22,25 @@ RANK_NONE = 0
 
 
 def ingest(con: sqlite3.Connection, image_dir: Path) -> None:
+    # Store one canonical form regardless of whether image_dir in the TOML was
+    # relative. `describe --path` resolves its argument too, so this also makes
+    # targeted re-description reliable.
+    image_dir = image_dir.expanduser().resolve()
     known = {h for (h,) in con.execute("SELECT hash FROM memes")}
+    scanned: dict[str, str] = {}
     seen = new = errors = 0
     for file in sorted(image_dir.rglob("*")):
         if not file.is_file() or file.suffix.lower() not in EXTENSIONS:
             continue
         seen += 1
         digest = hashlib.sha256(file.read_bytes()).hexdigest()
+        scanned[str(file)] = digest
         if digest in known:
-            con.execute("UPDATE memes SET path = ? WHERE hash = ?", (str(file), digest))
+            con.execute(
+                "INSERT INTO meme_files(path, hash) VALUES (?, ?) "
+                "ON CONFLICT(path) DO UPDATE SET hash = excluded.hash",
+                (str(file), digest),
+            )
             continue
         try:
             with Image.open(file) as img:
@@ -47,19 +57,57 @@ def ingest(con: sqlite3.Connection, image_dir: Path) -> None:
             (digest, str(file), phash),
         )
         known.add(digest)
+        con.execute(
+            "INSERT INTO meme_files(path, hash) VALUES (?, ?) "
+            "ON CONFLICT(path) DO UPDATE SET hash = excluded.hash",
+            (str(file), digest),
+        )
         new += 1
         if new % 69 == 0:  # Nice
             print(f"scanned {new} new / {seen} seen")
+    select_primary_paths(con, scanned)
     con.commit()
     print(
         f"ingest: {seen} files seen, {new} new, {seen - new - errors} already known, {errors} unreadable"
     )
 
 
+def file_matches(path: str, digest: str, scanned: dict[str, str]) -> bool:
+    if path in scanned:
+        return scanned[path] == digest
+    try:
+        with open(path, "rb") as file:
+            return hashlib.file_digest(file, "sha256").hexdigest() == digest
+    except OSError:
+        return False
+
+
+def select_primary_paths(
+    con: sqlite3.Connection, scanned: dict[str, str] | None = None
+) -> None:
+    """Keep the primary copy, falling back only when it no longer matches."""
+    scanned = scanned if scanned is not None else {}
+    for digest, primary in con.execute("SELECT hash, path FROM memes").fetchall():
+        if file_matches(primary, digest, scanned):
+            continue
+        copies = con.execute(
+            "SELECT path FROM meme_files WHERE hash = ? ORDER BY path", (digest,)
+        ).fetchall()
+        for (path,) in copies:
+            if file_matches(path, digest, scanned):
+                con.execute("UPDATE memes SET path = ? WHERE hash = ?", (path, digest))
+                break
+
+
 def prune_missing(con: sqlite3.Connection) -> None:
+    for path, digest in con.execute("SELECT path, hash FROM meme_files").fetchall():
+        if not file_matches(path, digest, {}):
+            con.execute("DELETE FROM meme_files WHERE path = ?", (path,))
+    select_primary_paths(con)
     rows = con.execute("SELECT hash, path FROM memes").fetchall()
-    missing = [h for h, p in rows if not Path(p).exists()]
+    missing = [h for h, p in rows if not file_matches(p, h, {})]
     if not missing:
+        con.commit()
         print("prune: no missing files")
         return
     marks = ",".join("?" * len(missing))
@@ -140,17 +188,17 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--prune-missing",
         action="store_true",
-        help="delete rows whose path no longer exists on disk",
+        help="remove unavailable copies; delete memes only when no copy remains",
     )
 
 
 def run(args: argparse.Namespace, cfg: dict) -> None:
     # Scan is the stage that creates the DB, so it's the one applying schema.sql.
     con = common.connect(cfg["db_path"], init_schema=True)
-    if args.prune_missing:
-        prune_missing(con)
     if not args.regroup_only:
         ingest(con, Path(cfg["image_dir"]).expanduser())
+    if args.prune_missing:
+        prune_missing(con)
     regroup(con, cfg["phash_threshold"])
     con.close()
 

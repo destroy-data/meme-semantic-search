@@ -11,6 +11,16 @@ CREATE TABLE IF NOT EXISTS memes (
 
 CREATE INDEX IF NOT EXISTS memes_dup_idx ON memes(perceptual_duplicate_of);
 
+-- Physical copies share metadata, descriptions and embeddings by content hash.
+CREATE TABLE IF NOT EXISTS meme_files (
+    path TEXT PRIMARY KEY,
+    hash TEXT NOT NULL REFERENCES memes(hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS meme_files_hash_idx ON meme_files(hash);
+
+-- Preserve the known paths when upgrading an existing database.
+INSERT OR IGNORE INTO meme_files(path, hash) SELECT path, hash FROM memes;
+
 -- One row per describe attempt. A meme can have multiple rows (different models,
 -- prompt versions, or reasoning_effort settings). Uniqueness
 -- is on the full config tuple; NULL effort_level counts as its own value via the

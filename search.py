@@ -55,9 +55,10 @@ def fts_hits(con: sqlite3.Connection, query: str) -> list[str]:
     return [h for (h,) in rows]
 
 
-def search(
+def search_with_hashes(
     con: sqlite3.Connection, embed_cfg: dict, query: str, top_n: int
-) -> list[str]:
+) -> list[tuple[str, str]]:
+    """Return ranked ``(hash, path)`` pairs for callers that need identity too."""
     vector = common.request_embedding(embed_cfg, query)
     scores: dict[str, float] = {}
     for hits in (vec_hits(con, vector), fts_hits(con, query)):
@@ -65,9 +66,16 @@ def search(
             scores[digest] = scores.get(digest, 0.0) + 1.0 / (RRF_K + rank)
     ranked = sorted(scores, key=lambda h: (-scores[h], h))[:top_n]
     return [
-        con.execute("SELECT path FROM memes WHERE hash = ?", (h,)).fetchone()[0]
+        (h, con.execute("SELECT path FROM memes WHERE hash = ?", (h,)).fetchone()[0])
         for h in ranked
     ]
+
+
+def search(
+    con: sqlite3.Connection, embed_cfg: dict, query: str, top_n: int
+) -> list[str]:
+    """Return ranked paths; the stable public API used by the CLI."""
+    return [path for _, path in search_with_hashes(con, embed_cfg, query, top_n)]
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:

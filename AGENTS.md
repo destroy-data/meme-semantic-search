@@ -80,7 +80,7 @@ tracks intent, not the exact CREATE statements.
 ```sql
 CREATE TABLE memes (
     hash                    TEXT PRIMARY KEY,           -- sha256 of file contents
-    path                    TEXT NOT NULL,              -- last known location on disk
+    path                    TEXT NOT NULL,              -- primary physical copy on disk
     phash                   TEXT NOT NULL,              -- perceptual hash (dedup)
     perceptual_duplicate_of TEXT REFERENCES memes(hash) -- phash group representative; NULL = representative
 );
@@ -134,6 +134,8 @@ Ollama) and re-running `embed` re-picks any `described` row missing a
   `perceptual_duplicate_of IS NULL`. Non-representatives keep their
   `descriptions` rows (invested work is preserved) but don't advance or appear
   in results, and re-enter automatically if they flip back to representative.
+- GUI duplicate browsing is an exception: it reads all members of a group,
+  including non-representatives, regardless of describe/embed progress.
 
 Design intent behind this schema — preserve these properties:
 
@@ -153,7 +155,8 @@ Design intent behind this schema — preserve these properties:
   every row (cheap, uses stored `phash`). Rows that flip from representative to
   duplicate silently drop out of queries; rows that flip the other way re-enter
   at whatever progress their `descriptions` / `memes_vec` state already reflects.
-  Exact duplicates (same sha256) are collapsed by the PK; this column is only
+  Exact duplicates (same sha256) share metadata by the PK, with every physical
+  path recorded in `meme_files`; this column is only
   for phash-similar near-duplicates, which can include false positives — the
   column name reflects that.
 
@@ -168,8 +171,17 @@ invocation:
 
 1. **Ingest.** Walk a configured directory of images (jpg/png/webp/gif). For each
    new file (unknown sha256): compute sha256 + perceptual hash (`imagehash`),
-   insert into `memes` with `perceptual_duplicate_of=NULL`. Known files are
-   skipped. No `descriptions` rows are created here — a fresh mem is "scanned"
+   insert into `memes` with `perceptual_duplicate_of=NULL`. Every physical
+   path is recorded in `meme_files(path PRIMARY KEY, hash REFERENCES memes(hash)
+   ON DELETE CASCADE)`, including identical copies. A path whose content changes
+   is reassigned to the new hash. Existing databases seed this table from
+   `memes.path`; another scan discovers the previously unrecorded copies.
+   Known content skips phash calculation and does not overwrite `memes.path`.
+   The first discovered copy becomes the primary path; keep it while its content
+   matches the hash. Otherwise select the first matching known copy ordered by
+   absolute path. All identical copies share one description per config and one
+   embedding; normal describe uses the primary path, while `--path` accepts any
+   recorded copy. No `descriptions` rows are created here — a fresh mem is "scanned"
    by virtue of having no matching `descriptions` row for the active config.
 2. **Regroup.** Recompute perceptual-duplicate groupings across **every** row
    (not just newly inserted ones) using stored `phash` values: near-duplicates
@@ -184,9 +196,10 @@ invocation:
    `descriptions` or `memes_vec` side is touched.
 
 Two useful flags: `--regroup-only` skips ingest and just re-runs the grouping
-pass (cheap; useful when tuning `phash_threshold`); `--prune-missing` deletes
-memes whose `path` no longer exists on disk, cascading through `descriptions`,
-`memes_fts`, and `memes_vec`.
+pass (cheap; useful when tuning `phash_threshold`); `--prune-missing` removes missing or replaced physical copies from `meme_files`,
+selects another primary copy when available, and deletes a meme and its
+`descriptions`, `memes_fts`, and `memes_vec` only when no matching copy remains.
+Ingest runs before pruning so newly discovered surviving copies preserve work.
 
 No GPU needed. Since regroup only reads `phash`, tuning the threshold on the M1
 sample is cheap — re-run `scan --regroup-only`, look at the dedup stats, adjust.
@@ -330,6 +343,57 @@ CLI: takes a free-text query, returns top-N file paths.
    `score[id] = Σ 1 / (60 + rank_in_list)` across both lists.
 4. Output: top-N paths, one per line (composable with `imv`/`feh`/`xargs`),
    plus a `--show` flag that opens results in an image viewer.
+
+### Stage 5 — GUI (`gui`)
+
+The GUI supports finding, previewing and copying memes, inspecting description
+variants, and now also reviewing duplicates and deleting selected files.
+
+**Implemented in the GUI:**
+
+- Show the selected meme's path directly below its image, relative to the
+  configured `image_dir`. Apply this in search and duplicate views. Keep the
+  absolute stored path for file operations; for a file outside `image_dir`,
+  show a relative path with `..` rather than dropping location information.
+- From a meme, open its duplicate group: the representative plus all rows
+  pointing to it, with each image available for preview and the representative
+  identified. A meme with no duplicates has a clear empty state.
+The selected-meme views open file lists; clicking a path previews it in the
+main pane. Copy/open actions use the previewed file and descriptions are loaded
+by content hash, including for non-primary copies. `Wróć do wyniku` returns to
+the selected search result. Esc closes the list. Hide missing or replaced files
+and report their count. Legacy databases without `meme_files` use known paths
+from `memes` until the next scan.
+
+**Scope extension agreed; not implemented yet:**
+
+- Offer a separate view of all duplicate groups in the indexed collection,
+  independent of the current search query. Include only groups with at least
+  two members; show their sizes and allow browsing their members, even when
+  those members have no descriptions or embeddings.
+- Allow selecting one or multiple memes and deleting their files from disk,
+  from both search and duplicate views. The primary use is duplicate cleanup,
+  but deletion is not restricted to non-representatives. Delete only explicitly
+  selected files, never an entire group implicitly.
+- Reflect successful deletions in `memes`, `descriptions`, `memes_fts` and
+  `memes_vec`, and refresh visible results and groups. A filesystem failure
+  must be reported for that file and must not discard its database records.
+  Regroup remaining rows after deletion, using the existing representative
+  selection rules; preserve all work belonging to surviving memes. A newly
+  promoted representative may need describe/embed before it becomes searchable;
+  deletion does not itself run model inference.
+
+Here, a duplicate group means the existing perceptual-similarity annotation;
+it may contain false positives, so users choose which files to remove.
+Exact copies share one `memes` row but retain all scanned paths in `meme_files`.
+The GUI exposes these physical copies too, including groups containing
+only identical copies. Group sizes count physical files. Selecting a copy for
+deletion removes only that path; retain shared metadata and indexes while another
+copy survives. The primary path and the perceptual group representative are
+separate choices. Files not yet scanned cannot be listed.
+
+Indexing remains a CLI operation. This extension does not add tagging, image
+editing, folder watching or a web UI.
 
 ## Build order (milestones — do not skip ahead)
 
