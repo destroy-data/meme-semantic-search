@@ -1,12 +1,14 @@
 """Stage 5: Dear PyGui GUI over stage 4 search."""
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
 import sqlite3
 import subprocess
 import time
+from pathlib import Path
 
 import dearpygui.dearpygui as dpg
 
@@ -19,15 +21,28 @@ def variant_label(model: str, prompt_version: str, effort_level: str | None) -> 
     return f"{model} @ {prompt_version}{suffix}"
 
 
+def page_key(names: tuple[str, ...], fallback: int) -> int:
+    """Prefer exported ImGui keys; ignore legacy native key codes below 512."""
+    for name in names:
+        value = getattr(dpg, name, None)
+        if isinstance(value, int) and value >= 512:
+            return value
+    # DPG 2.3.1 exports GLFW codes in mvKey_Prior/Next instead of ImGui keys.
+    return fallback
+
+
 KEY_COLOR = (255, 215, 80, 255)
 HINT_COLOR = (140, 140, 140, 255)
 
 DEBOUNCE_S = 0.3  # idle time after the last keystroke before we search
 PAGE_STEP = 10  # results skipped by PageUp/PageDown
+PAGE_UP_KEY = page_key(("mvKey_PageUp", "mvKey_Prior"), 517)
+PAGE_DOWN_KEY = page_key(("mvKey_PageDown", "mvKey_Next"), 518)
 TOP_N_DEFAULT = 50
 TOP_N_STEP = 10
 TOP_N_RANGE = (10, 100)
 ROW_H_FALLBACK = 21  # used until a rendered row can be measured
+FOOTER_SPACE = 36  # keep the status line outside the scrolling content panes
 
 # Modifier keys are queried as regular keys; the Mod* aliases are what ImGui
 # reports on Wayland, the L/R ones are a cheap safety net on other backends.
@@ -119,6 +134,30 @@ def open_externally(path: str) -> str:
     return f"otwieram w {viewer}"
 
 
+def current_result_paths(hits: list[tuple[str, str]]) -> tuple[list[str], int]:
+    """Keep only hits whose file still has the indexed content hash.
+
+    A file may be replaced in place between scans. In that case an older DB row
+    can still point at its path, but displaying it would show a different meme
+    than the one whose description matched the query. Hide that stale row in
+    the GUI without modifying the database.
+    """
+    paths: list[str] = []
+    hidden = 0
+    for expected_hash, path in hits:
+        try:
+            with open(path, "rb") as file:
+                actual_hash = hashlib.file_digest(file, "sha256").hexdigest()
+        except OSError:
+            hidden += 1
+            continue
+        if actual_hash != expected_hash:
+            hidden += 1
+            continue
+        paths.append(path)
+    return paths, hidden
+
+
 # DPG 2.x autoloads all Unicode ranges from a bound font, so we only need to
 # point it at a TTF that actually has Polish glyphs (default DPG font doesn't).
 FONT_CANDIDATES = [
@@ -130,6 +169,37 @@ FONT_CANDIDATES = [
 ]
 
 
+def indexed_files_sql(con: sqlite3.Connection) -> str:
+    """Include legacy databases until the next scan creates meme_files."""
+    if con.execute("SELECT 1 FROM sqlite_master WHERE name = 'meme_files'").fetchone():
+        return "SELECT hash, path FROM meme_files UNION SELECT hash, path FROM memes"
+    return "SELECT hash, path FROM memes"
+
+
+def related_files(
+    con: sqlite3.Connection, digest: str, *, identical: bool
+) -> list[tuple[str, str, bool, bool]]:
+    """Return physical paths with representative and primary-copy markers."""
+    condition = (
+        "m.hash = selected.hash"
+        if identical
+        else "COALESCE(m.perceptual_duplicate_of, m.hash) = "
+        "COALESCE(selected.perceptual_duplicate_of, selected.hash)"
+    )
+    return con.execute(
+        f"""
+        WITH files AS ({indexed_files_sql(con)})
+        SELECT m.hash, f.path, m.perceptual_duplicate_of IS NULL, f.path = m.path
+        FROM memes selected
+        JOIN memes m ON {condition}
+        JOIN files f ON f.hash = m.hash
+        WHERE selected.hash = ?
+        ORDER BY m.perceptual_duplicate_of IS NOT NULL, m.hash, f.path
+        """,
+        (digest,),
+    ).fetchall()
+
+
 class App:
     def __init__(self, cfg: dict) -> None:
         self.cfg = cfg
@@ -138,6 +208,9 @@ class App:
         self.current_idx: int = -1
         self.current_tex: int | str | None = None
         self.current_raw: str | None = None
+        self.preview_path: str | None = None
+        self.preview_hash: str | None = None
+        self.image_dir = Path(cfg["image_dir"]).expanduser().resolve()
         self.img_size: tuple[int, int] = (0, 0)
         self.variants: dict[str, str | None] = {}
         self.top_n = TOP_N_DEFAULT
@@ -148,11 +221,14 @@ class App:
         self.pane_w = 0
         self.show_desc = True
         self.fullscreen = False
+        self.mode = "Szukaj"
 
     # ---------------------------------------------------------------- build
 
     def build(self) -> None:
         dpg.create_context()
+        # Process callbacks on the render thread.
+        dpg.configure_app(manual_callback_management=True)
 
         with dpg.font_registry():
             font_path = next((p for p in FONT_CANDIDATES if os.path.exists(p)), None)
@@ -163,26 +239,57 @@ class App:
         dpg.add_texture_registry(tag="tex_reg")
         self.bind_keys()
 
-        with dpg.window(tag="main", no_title_bar=True, no_resize=True, no_move=True):
-            dpg.add_input_text(
-                tag="query",
-                hint="opisz mem…",
-                width=-1,
-                callback=self.on_query_change,
-            )
+        with dpg.window(
+            tag="main",
+            no_title_bar=True,
+            no_resize=True,
+            no_move=True,
+            no_scrollbar=True,
+            no_scroll_with_mouse=True,
+        ):
+            with dpg.table(header_row=False, width=-1):
+                dpg.add_table_column()
+                dpg.add_table_column(width_fixed=True, init_width_or_weight=160)
+                with dpg.table_row():
+                    dpg.add_input_text(
+                        tag="query",
+                        hint="opisz mem…",
+                        width=-1,
+                        callback=self.on_query_change,
+                    )
+                    dpg.add_radio_button(
+                        ("Szukaj", "Lista"),
+                        tag="view_mode",
+                        default_value=self.mode,
+                        horizontal=True,
+                        callback=self.on_mode_change,
+                    )
 
-            with dpg.group(horizontal=True):
+            with dpg.group(tag="search_content", horizontal=True):
                 with dpg.child_window(
-                    tag="list_pane", width=380, autosize_y=True, border=False
+                    tag="list_pane", width=380, height=-FOOTER_SPACE, border=False
                 ):
                     pass
                 with dpg.child_window(
                     tag="preview_pane",
                     autosize_x=True,
-                    autosize_y=True,
+                    height=-FOOTER_SPACE,
                     border=False,
                 ):
-                    dpg.add_text("wpisz zapytanie", tag="preview_hint")
+                    dpg.add_text("", tag="preview_path", show=False, wrap=700)
+                    with dpg.group(tag="preview_actions", horizontal=True, show=False):
+                        dpg.add_button(
+                            label="Grupa duplikatów",
+                            callback=lambda: self.open_related(identical=False),
+                        )
+                        dpg.add_button(
+                            label="Identyczne kopie",
+                            callback=lambda: self.open_related(identical=True),
+                        )
+                        dpg.add_button(
+                            label="Wróć do wyniku",
+                            callback=lambda: self.select_index(self.current_idx),
+                        )
                     dpg.add_combo(
                         tag="desc_variant",
                         items=[],
@@ -192,10 +299,24 @@ class App:
                     )
                     dpg.add_group(tag="preview_desc", show=False)
 
-            with dpg.group(horizontal=True):
-                dpg.add_text("", tag="status")
-                dpg.add_text("— F1: skróty", tag="status_hint", color=HINT_COLOR)
+            dpg.add_child_window(
+                tag="list_content",
+                width=-1,
+                height=-FOOTER_SPACE,
+                border=False,
+                show=False,
+            )
 
+            with dpg.table(tag="footer", header_row=False, width=-1):
+                dpg.add_table_column()
+                dpg.add_table_column(width_fixed=True, init_width_or_weight=110)
+                with dpg.table_row():
+                    dpg.add_text("", tag="status")
+                    dpg.add_text("— F1: skróty", tag="status_hint", color=HINT_COLOR)
+
+        dpg.add_window(
+            label="Duplikaty", tag="related", show=False, width=720, height=460
+        )
         dpg.add_window(
             label="Skróty klawiszowe",
             tag="help",
@@ -216,11 +337,12 @@ class App:
         dpg.setup_dearpygui()
         dpg.set_primary_window("main", True)
         dpg.show_viewport()
+        dpg.focus_item("query")
 
     def bind_keys(self) -> None:
-        """All shortcuts are global handlers: the query box owns the keyboard
-        permanently (see keep_query_focused), so anything bound to a bare letter
-        would be swallowed by typing. Letters therefore always need a modifier;
+        """All shortcuts are global handlers: the query box normally owns the
+        keyboard, so anything bound to a bare letter would be swallowed by
+        typing. Letters therefore always need a modifier;
         arrows, PgUp/PgDn, Esc and F-keys are free because a single-line input
         does nothing with them. Plain Home/End are deliberately left to the text
         cursor — Ctrl+Home/End do the list jumps instead.
@@ -229,10 +351,10 @@ class App:
             dpg.add_key_press_handler(dpg.mvKey_Down, callback=lambda: self.step(1))
             dpg.add_key_press_handler(dpg.mvKey_Up, callback=lambda: self.step(-1))
             dpg.add_key_press_handler(
-                dpg.mvKey_Next, callback=lambda: self.step(PAGE_STEP)
+                PAGE_DOWN_KEY, callback=lambda: self.step(PAGE_STEP)
             )
             dpg.add_key_press_handler(
-                dpg.mvKey_Prior, callback=lambda: self.step(-PAGE_STEP)
+                PAGE_UP_KEY, callback=lambda: self.step(-PAGE_STEP)
             )
             dpg.add_key_press_handler(dpg.mvKey_Home, callback=self.on_home)
             dpg.add_key_press_handler(dpg.mvKey_End, callback=self.on_end)
@@ -261,6 +383,8 @@ class App:
     # --------------------------------------------------------------- search
 
     def on_query_change(self, *_: object) -> None:
+        if self.mode != "Szukaj":
+            return
         # Search-as-you-type: arm the debounce, the run loop fires it.
         self.search_at = time.monotonic() + DEBOUNCE_S
 
@@ -271,6 +395,8 @@ class App:
         self.do_search()
 
     def do_search(self) -> None:
+        if self.mode != "Szukaj":
+            return
         query = dpg.get_value("query").strip()
         if not query:
             self.last_query = ""
@@ -281,7 +407,10 @@ class App:
             dpg.set_value("status", "")
             return
         try:
-            paths = search_stage.search(self.con, self.cfg["embed"], query, self.top_n)
+            hits = search_stage.search_with_hashes(
+                self.con, self.cfg["embed"], query, self.top_n
+            )
+            paths, hidden = current_result_paths(hits)
         # Endpoint down or timing out (OSError), a malformed or wrong-sized
         # embedding response (ValueError, KeyError), or a DB hiccup.
         except (OSError, ValueError, KeyError, sqlite3.Error) as e:
@@ -302,13 +431,16 @@ class App:
         if paths:
             self.current_idx = -1
             self.select_index(0)
-            dpg.set_value("status", f"{len(paths)} wyników (z {self.top_n})")
+            suffix = f", ukryto {hidden} nieaktualnych" if hidden else ""
+            dpg.set_value("status", f"{len(paths)} wyników (z {self.top_n}{suffix})")
         else:
             self.current_idx = -1
             dpg.set_value("status", "brak wyników")
             self.clear_preview()
 
     def bump_top_n(self, delta: int) -> None:
+        if self.mode != "Szukaj":
+            return
         if not key_down(CTRL_KEYS):
             return
         low, high = TOP_N_RANGE
@@ -325,9 +457,16 @@ class App:
 
     def on_select(self, _sender: object, _app_data: object, user_data: int) -> None:
         self.select_index(user_data)
+        dpg.focus_item("query")
 
     def select_index(self, idx: int) -> None:
-        if not (0 <= idx < len(self.paths)) or idx == self.current_idx:
+        if self.mode != "Szukaj":
+            return
+        if not (0 <= idx < len(self.paths)):
+            return
+        if idx == self.current_idx and self.preview_path == self.paths[idx]:
+            # Selectables toggle on click; keep the currently previewed row selected.
+            dpg.set_value(f"row_{idx}", True)
             return
         if dpg.does_item_exist(f"row_{self.current_idx}"):
             dpg.set_value(f"row_{self.current_idx}", False)
@@ -376,7 +515,9 @@ class App:
         self.do_search()
 
     def on_escape(self, *_: object) -> None:
-        if dpg.is_item_shown("help"):
+        if dpg.is_item_shown("related"):
+            dpg.hide_item("related")
+        elif dpg.is_item_shown("help"):
             dpg.hide_item("help")
         elif dpg.get_value("query"):
             dpg.set_value("query", "")
@@ -391,10 +532,64 @@ class App:
     # ------------------------------------------------------------- actions
 
     def current_path(self) -> str | None:
-        if 0 <= self.current_idx < len(self.paths):
-            return self.paths[self.current_idx]
+        if self.mode != "Szukaj":
+            return None
+        if self.preview_path:
+            return self.preview_path
         dpg.set_value("status", "nie ma czego skopiować")
         return None
+
+    def relative_path(self, path: str) -> str:
+        return os.path.relpath(path, self.image_dir)
+
+    def open_related(self, *, identical: bool) -> None:
+        if self.preview_hash is None:
+            return
+        rows = related_files(self.con, self.preview_hash, identical=identical)
+        paths, hidden = current_result_paths([(h, p) for h, p, _, _ in rows])
+        available = set(paths)
+        dpg.delete_item("related", children_only=True)
+        title = "Identyczne kopie" if identical else "Grupa duplikatów"
+        dpg.configure_item("related", label=title)
+        dpg.add_text(self.relative_path(self.preview_path), parent="related", wrap=680)
+        dpg.add_text(
+            f"{len(paths)} plików; kliknij ścieżkę, aby podejrzeć obraz.",
+            parent="related",
+        )
+        if len(paths) <= 1:
+            dpg.add_text(
+                "Brak innych identycznych kopii."
+                if identical
+                else "Brak innych duplikatów.",
+                parent="related",
+            )
+        if hidden:
+            dpg.add_text(f"Ukryto {hidden} nieaktualnych ścieżek.", parent="related")
+        for digest, path, representative, primary in rows:
+            if path not in available:
+                continue
+            markers = []
+            if representative and not identical:
+                markers.append("reprezentant")
+            if primary:
+                markers.append("kopia główna")
+            suffix = f" ({', '.join(markers)})" if markers else ""
+            dpg.add_selectable(
+                label=self.relative_path(path) + suffix,
+                default_value=path == self.preview_path,
+                parent="related",
+                callback=self.on_related_select,
+                user_data=path,
+            )
+        dpg.show_item("related")
+
+    def on_related_select(
+        self, _sender: object, _app_data: object, user_data: str
+    ) -> None:
+        self.show(user_data)
+        # Close the list so the selected image is immediately visible.
+        dpg.hide_item("related")
+        dpg.focus_item("query")
 
     def on_copy(self, *_: object) -> None:
         if not key_down(CTRL_KEYS):
@@ -428,6 +623,22 @@ class App:
 
     # ---------------------------------------------------------- view toggles
 
+    def on_mode_change(self, _sender: object, app_data: str) -> None:
+        self.mode = app_data
+        searching = self.mode == "Szukaj"
+        self.search_at = None
+        self.pending_copy = None
+        dpg.hide_item("related")
+        dpg.configure_item("query", enabled=searching)
+        dpg.configure_item("search_content", show=searching)
+        dpg.configure_item("list_content", show=not searching)
+        dpg.configure_item("status", show=searching)
+        if searching:
+            self.apply_layout()
+            if dpg.get_value("query").strip() != self.last_query:
+                self.on_query_change()
+            dpg.focus_item("query")
+
     def on_toggle_desc(self, *_: object) -> None:
         if not key_down(CTRL_KEYS):
             return
@@ -459,6 +670,8 @@ class App:
         dpg.focus_item("query")
 
     def on_tab(self, *_: object) -> None:
+        if self.mode != "Szukaj":
+            return
         labels = list(self.variants)
         if len(labels) < 2:
             return
@@ -491,13 +704,30 @@ class App:
             return
         # In fullscreen the description is hidden, so the image may use the
         # whole pane; otherwise leave room for the variant combo + text below.
-        avail_h = pane_h if self.fullscreen or not self.show_desc else pane_h * 0.6
+        avail_h = (
+            pane_h - 90 if self.fullscreen or not self.show_desc else pane_h * 0.6 - 90
+        )
         scale = min(pane_w / w, avail_h / h, 1.0)
         dpg.configure_item(
             "preview_img", width=max(1, int(w * scale)), height=max(1, int(h * scale))
         )
 
     def show(self, path: str) -> None:
+        # Messages from copy/open/load actions belong to the previous preview.
+        dpg.set_value("status", "")
+        indexed = self.con.execute(
+            f"SELECT hash FROM ({indexed_files_sql(self.con)}) WHERE path = ?",
+            (path,),
+        ).fetchall()
+        try:
+            with open(path, "rb") as file:
+                digest = hashlib.file_digest(file, "sha256").hexdigest()
+        except OSError as e:
+            dpg.set_value("status", f"nie mogę wczytać: {path}: {e}")
+            return
+        if (digest,) not in indexed:
+            dpg.set_value("status", f"plik zniknął lub zmienił zawartość: {path}")
+            return
         # load_image reports an unreadable file by returning None, not raising.
         loaded = dpg.load_image(path)
         if loaded is None:
@@ -509,8 +739,6 @@ class App:
             width=w, height=h, default_value=data, parent="tex_reg"
         )
 
-        if dpg.does_item_exist("preview_hint"):
-            dpg.delete_item("preview_hint")
         if dpg.does_item_exist("preview_img"):
             dpg.delete_item("preview_img")
 
@@ -518,20 +746,26 @@ class App:
             new_tex,
             tag="preview_img",
             parent="preview_pane",
-            before="desc_variant",
+            before="preview_path",
         )
+        self.preview_path = path
+        self.preview_hash = digest
+        dpg.set_value("preview_path", self.relative_path(path))
+        dpg.show_item("preview_path")
+        group = related_files(self.con, digest, identical=False)
+        available, _ = current_result_paths([(h, p) for h, p, _, _ in group])
+        dpg.configure_item("preview_actions", show=len(available) > 1)
         self.img_size = (w, h)
         self.fit_image()
 
         rows = self.con.execute(
             """
             SELECT d.model, d.prompt_version, d.effort_level, d.description_json
-            FROM memes m
-            JOIN descriptions d ON d.hash = m.hash
-            WHERE m.path = ? AND d.status = 'described'
+            FROM descriptions d
+            WHERE d.hash = ? AND d.status = 'described'
             ORDER BY d.created_at DESC
             """,
-            (path,),
+            (digest,),
         ).fetchall()
         self.variants = {
             variant_label(model, prompt, effort): raw
@@ -562,15 +796,13 @@ class App:
         self.current_tex = new_tex
 
     def clear_preview(self) -> None:
+        self.preview_path = None
+        self.preview_hash = None
+        dpg.hide_item("preview_path")
+        dpg.hide_item("preview_actions")
+        dpg.hide_item("related")
         if dpg.does_item_exist("preview_img"):
             dpg.delete_item("preview_img")
-        if not dpg.does_item_exist("preview_hint"):
-            dpg.add_text(
-                "wpisz zapytanie",
-                tag="preview_hint",
-                parent="preview_pane",
-                before="desc_variant",
-            )
         if dpg.does_item_exist("preview_desc"):
             dpg.delete_item("preview_desc", children_only=True)
             dpg.configure_item("preview_desc", show=False)
@@ -585,29 +817,16 @@ class App:
 
     # ------------------------------------------------------------- main loop
 
-    def keep_query_focused(self) -> None:
-        """Type-anywhere: the query box owns the keyboard unless another widget
-        is actively being edited.
-
-        Checks `active` (= being edited), not `focused`: pressing Enter drops the
-        keyboard capture but leaves the box "focused", so a focused-based guard
-        would never hand the keys back after a search.
-        """
-        if dpg.is_item_active("query"):
-            return
-        # The combo's popup is a separate ImGui window we can't inspect, so back
-        # off while it merely holds focus too - stealing would close it.
-        if dpg.is_item_focused("desc_variant") or dpg.is_item_active("desc_variant"):
-            return
-        dpg.focus_item("query")
-
     def handle_resize(self) -> None:
         """Refit the image and re-wrap the description when the pane changes
         width (window resize, fullscreen toggle) - neither adapts on its own."""
+        if self.mode != "Szukaj":
+            return
         pane_w = dpg.get_item_rect_size("preview_pane")[0]
         if not pane_w or abs(pane_w - self.pane_w) < 20:
             return
         self.pane_w = pane_w
+        dpg.configure_item("preview_path", wrap=max(200, pane_w - 20))
         self.fit_image()
         if self.variants:
             self.render_description(self.current_raw)
@@ -615,7 +834,7 @@ class App:
     def run(self) -> None:
         self.build()
         while dpg.is_dearpygui_running():
-            self.keep_query_focused()
+            dpg.run_callbacks(dpg.get_callback_queue())
             self.maybe_search()
             self.handle_resize()
             dpg.render_dearpygui_frame()

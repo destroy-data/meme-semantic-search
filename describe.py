@@ -4,7 +4,9 @@ import argparse
 import base64
 import io
 import json
+import os
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -37,7 +39,7 @@ REQUEST_TIMEOUT = 4 * 69  # Somewhat nice
 # A spent subscription quota says nothing about the meme, so it must not become
 # a failed_describe row: that row would count as "done" and the retry would be
 # skipped. Wait the window out and re-send the same image instead.
-USAGE_LIMIT_WAIT = 3600
+USAGE_LIMIT_WAIT = 3600 // 4
 USAGE_LIMIT_API_ERROR = "usage_limit_reached"
 
 
@@ -152,28 +154,58 @@ def request_description_cli(
         f"{prompt}\n\nOpisz mema z pliku: {path}\n\n"
         "Wynik oddaj przez structured output, nie jako tekst."
     )
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         argv,
-        input=body,
         # Both streams captured, never inherited: stdout carries the result
         # envelope that tells a spent quota from a broken image, and stderr is
         # kept for the error message when there is no envelope at all. Under -v
         # stderr is echoed below instead.
-        capture_output=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=REQUEST_TIMEOUT,
-        check=False,  # a failed CLI run becomes a failed_describe row, not a crash
+        # Own session, so the terminal's Ctrl+C reaches only us: the first press
+        # lets this description finish (see describe_memes). On a second press
+        # we can explicitly terminate the whole process group.
+        start_new_session=True,
     )
-    if verbose and proc.stderr:
-        print(proc.stderr, end="", file=sys.stderr)
+    try:
+        stdout, stderr = proc.communicate(body, timeout=REQUEST_TIMEOUT)
+    except KeyboardInterrupt:
+        # subprocess.run() does not kill a child started in a new session when
+        # interrupted. Signal the group so any CLI descendants are stopped too.
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+        raise
+    except subprocess.TimeoutExpired:
+        # Match subprocess.run's timeout behavior, including reaping the child.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.communicate()
+        raise
+    if verbose and stderr:
+        print(stderr, end="", file=sys.stderr)
     # A failed run still prints its result envelope (exit 1, is_error=true),
     # and that envelope is the only place the cause is spelled out.
     try:
-        envelope = json.loads(proc.stdout)
+        envelope = json.loads(stdout)
     except json.JSONDecodeError:
         envelope = None
     if envelope is None:
-        detail = ((proc.stderr or "") + (proc.stdout or "")).strip()
+        detail = ((stderr or "") + (stdout or "")).strip()
         raise RuntimeError(
             f"claude exited {proc.returncode}: {detail[:500] or 'no output'}"
         )
@@ -238,7 +270,7 @@ def rows_for_paths(con: sqlite3.Connection, paths: list[str]) -> list[tuple[str,
     for raw in paths:
         target = str(Path(raw).resolve())
         row = con.execute(
-            "SELECT hash, path FROM memes WHERE path = ?", (target,)
+            "SELECT hash, path FROM meme_files WHERE path = ?", (target,)
         ).fetchone()
         if row is None:
             missing.append(target)
@@ -311,8 +343,50 @@ def describe_memes(
         if limit:
             rows = rows[:limit]
 
+    # First Ctrl+C only raises this flag: the description in flight is paid for
+    # (minutes, or subscription quota), so it is finished and committed before
+    # the loop stops. A second Ctrl+C is the default KeyboardInterrupt.
+    stop = False
+
+    def request_stop(signum, frame) -> None:
+        nonlocal stop
+        stop = True
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        print(
+            "\nstopping after the current description (Ctrl+C again to abort now)",
+            file=sys.stderr,
+        )
+
+    previous_handler = signal.signal(signal.SIGINT, request_stop)
+    try:
+        done, failed = describe_rows(
+            con, cfg, rows, prompt, backend, verbose, lambda: stop
+        )
+    finally:
+        signal.signal(signal.SIGINT, previous_handler)
+    if stop:
+        print(f"stopped: described {done}/{len(rows)}, {failed} failed")
+        # 128 + SIGINT; exiting rather than returning also keeps `index` from
+        # moving on to embed.
+        raise SystemExit(130)
+
+
+def describe_rows(
+    con: sqlite3.Connection,
+    cfg: dict,
+    rows: list[tuple[str, str]],
+    prompt: str,
+    backend: str,
+    verbose: bool,
+    stopping,
+) -> tuple[int, int]:
+    version = cfg["prompt_version"]
+    model = cfg["model"]
+    effort = cfg.get("effort_level")
     done = failed = 0
     for digest, path in rows:
+        if stopping():
+            break
         # Retried in place on a usage limit, so the loop advances only once
         # this meme is either described or recorded as failed.
         while True:
@@ -357,7 +431,13 @@ def describe_memes(
                     f"{time.strftime('%H:%M:%S')} usage limit hit, waiting "
                     f"{USAGE_LIMIT_WAIT // 60} min before retrying {Path(path).name}: {e}"
                 )
-                time.sleep(USAGE_LIMIT_WAIT)
+                # Slept in short slices so Ctrl+C during the wait exits at once:
+                # nothing is in flight, so there is nothing to finish.
+                deadline = time.monotonic() + USAGE_LIMIT_WAIT
+                while time.monotonic() < deadline and not stopping():
+                    time.sleep(1)
+                if stopping():
+                    break
             # Any other error is this image's failure: recorded and moved past,
             # since a single bad image must never kill a run.
             except Exception as e:  # noqa: BLE001
@@ -378,6 +458,7 @@ def describe_memes(
                 f"{time.strftime('%H:%M:%S')} described {done}/{len(rows)}, "
                 f"{failed} failed"
             )
+    return done, failed
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:

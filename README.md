@@ -107,6 +107,8 @@ embedder blurs. RRF needs no score calibration between them, which is the point.
 One SQLite file is queue, metadata store and search index. DDL in `schema.sql`.
 
 - **`memes`** — `hash` (sha256, PK), `path`, `phash`, `perceptual_duplicate_of`
+- **`meme_files`** — every scanned physical path, linked to its content hash;
+  identical copies share a `memes` row and its descriptions/embedding
 - **`descriptions`** — one row per describe *attempt*, unique on
   `(hash, model, prompt_version, effort_level)`
 - **`memes_fts`** — FTS5, `remove_diacritics 2`
@@ -134,6 +136,53 @@ schema.sql  DDL        prompts/  versioned prompt files
 Each stage module exposes `add_arguments(parser)` / `run(args, cfg)` /
 `main(argv=None)`, so `memes.py <stage>` and running the module directly share
 one implementation. After editing: `ruff format . && ruff check .`
+
+## GUI scope
+
+The top row has a **Szukaj / Lista** switch to the right of the search field.
+**Lista** is currently an empty placeholder; searching is disabled there.
+Returning to **Szukaj** restores the query, results and preview.
+
+The current GUI searches as you type, previews selected images, lets you inspect
+description variants, and supports keyboard navigation, copying an image or its
+path, and opening it in an external viewer.
+
+The GUI also displays the path below the image, relative to `image_dir`.
+From the selected meme, use **Grupa duplikatów** to browse its perceptual group
+(including physical copies), or **Identyczne kopie** for files with exactly the
+same content. Lists identify the representative and primary copies. Click a
+path to preview that file; descriptions, copying and opening then use the
+previewed file. **Wróć do wyniku** returns to the selected search result. Esc
+closes the list. Missing or replaced files are hidden with a count.
+
+Legacy databases can still show perceptual groups from `memes`; run scan to
+populate `meme_files` and discover all identical copies.
+
+The following scope extension is agreed but **not implemented yet**:
+
+1. Browse all duplicate groups independently of search, with group sizes and
+   access to members even if they have not been described or embedded.
+2. Select one or multiple memes and delete their files from disk, primarily to
+   clean up duplicates. This is also available for ordinary search results.
+   Only selected files are removed; successful deletions update the database,
+   search results and groups. File deletion failures remain visible and retain
+   their database records.
+
+Deleting a representative selects a new one from the remaining group using the
+existing grouping rules, preserving surviving descriptions and embeddings.
+The new representative may still need CLI indexing before appearing in search.
+
+Groups refer to perceptually similar images and can include false positives.
+Identical copies share one metadata row but keep every scanned path in
+`meme_files`. The first discovered copy remains the primary path for describing
+and search; scanning switches to the first matching copy ordered by path only
+when the primary disappears or changes content. `describe --path` accepts any
+recorded copy. Re-scan an existing collection to discover copies whose paths
+were previously overwritten. Pruning removes shared metadata only when no copy
+remains. GUI groups include identical copies and count physical files. Planned
+deletion of one copy preserves shared work while another remains. Indexing
+remains in the CLI; tagging, image editing, folder
+watching and a web UI are outside this extension.
 
 ## Gotchas
 
