@@ -8,6 +8,8 @@ import shutil
 import sqlite3
 import subprocess
 import time
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 import dearpygui.dearpygui as dpg
@@ -200,6 +202,66 @@ def related_files(
     ).fetchall()
 
 
+@dataclass
+class CollectionFile:
+    digest: str
+    path: str
+    group: str
+    primary: bool
+    status: str | None
+    indexed: bool
+    copies: int = 1
+
+
+def collection_files(
+    con: sqlite3.Connection, cfg: dict
+) -> tuple[list[CollectionFile], int]:
+    """Read all physical files, including unindexed and non-representative memes."""
+    rows = con.execute(
+        f"""
+        WITH files AS ({indexed_files_sql(con)})
+        SELECT m.hash, f.path, COALESCE(m.perceptual_duplicate_of, m.hash),
+               f.path = m.path, d.status,
+               EXISTS(SELECT 1 FROM memes_vec v WHERE v.hash = m.hash)
+        FROM memes m JOIN files f ON f.hash = m.hash
+        LEFT JOIN descriptions d ON d.hash = m.hash AND d.model = ?
+            AND d.prompt_version = ? AND d.effort_level IS ?
+        ORDER BY f.path
+        """,
+        (cfg["model"], cfg["prompt_version"], cfg.get("effort_level")),
+    ).fetchall()
+    available, hidden = current_result_paths([(r[0], r[1]) for r in rows])
+    available = set(available)
+    files = [CollectionFile(*r) for r in rows if r[1] in available]
+    counts = Counter(f.digest for f in files)
+    for file in files:
+        file.copies = counts[file.digest]
+    return files, hidden
+
+
+def filter_collection(
+    files: list[CollectionFile], query: str, kind: str
+) -> list[CollectionFile]:
+    groups = Counter(f.group for f in files)
+    query = query.strip().casefold()
+    return [
+        f
+        for f in files
+        if query in f.path.casefold()
+        and (
+            kind == "Wszystkie"
+            or kind == "Duplikaty"
+            and groups[f.group] > 1
+            or kind == "Identyczne kopie"
+            and f.copies > 1
+            or kind == "Nieopisane"
+            and f.status is None
+            or kind == "Błędy"
+            and f.status == "failed_describe"
+        )
+    ]
+
+
 class App:
     def __init__(self, cfg: dict) -> None:
         self.cfg = cfg
@@ -218,10 +280,23 @@ class App:
         self.pending_copy: tuple[str, str] | None = None  # (kind, path)
         self.search_at: float | None = None  # debounce deadline, None = idle
         self.last_query = ""
+        self.embedding_weight = 0.5
+        self.last_embedding_weight = 0.5
         self.pane_w = 0
         self.show_desc = True
         self.fullscreen = False
         self.mode = "Szukaj"
+        self.mode_state = {}
+        self.checked = {"Szukaj": set(), "Lista": set()}
+        self.collection = None
+        self.collection_hidden = 0
+        self.collection_filter = "Wszystkie"
+        self.list_selected = None
+        self.related_origin = None
+        self.related_scroll = 0
+        self.related_identical = False
+        self.collection_widgets = {}
+        self.restore_scroll = None
 
     # ---------------------------------------------------------------- build
 
@@ -249,6 +324,11 @@ class App:
         ):
             with dpg.table(header_row=False, width=-1):
                 dpg.add_table_column()
+                dpg.add_table_column(
+                    tag="search_balance_column",
+                    width_fixed=True,
+                    init_width_or_weight=155,
+                )
                 dpg.add_table_column(width_fixed=True, init_width_or_weight=160)
                 with dpg.table_row():
                     dpg.add_input_text(
@@ -257,6 +337,23 @@ class App:
                         width=-1,
                         callback=self.on_query_change,
                     )
+                    with dpg.group(tag="search_balance", horizontal=True):
+                        dpg.add_slider_int(
+                            tag="embedding_weight",
+                            default_value=50,
+                            min_value=0,
+                            max_value=100,
+                            width=140,
+                            format="%d%% emb.",
+                            clamped=True,
+                            callback=self.on_balance_change,
+                        )
+                    with dpg.tooltip("embedding_weight"):
+                        dpg.add_text(
+                            "W lewo: dopasowanie tekstu (FTS).\n"
+                            "W prawo: podobieństwo znaczenia (embeddingi).\n"
+                            "50%: oba równie ważne."
+                        )
                     dpg.add_radio_button(
                         ("Szukaj", "Lista"),
                         tag="view_mode",
@@ -268,6 +365,34 @@ class App:
             with dpg.group(tag="search_content", horizontal=True):
                 with dpg.child_window(
                     tag="list_pane", width=380, height=-FOOTER_SPACE, border=False
+                ):
+                    pass
+                with dpg.child_window(
+                    tag="list_content",
+                    width=570,
+                    height=-FOOTER_SPACE,
+                    border=False,
+                    show=False,
+                ):
+                    dpg.add_combo(
+                        [
+                            "Wszystkie",
+                            "Duplikaty",
+                            "Identyczne kopie",
+                            "Nieopisane",
+                            "Błędy",
+                        ],
+                        default_value="Wszystkie",
+                        width=-1,
+                        callback=self.on_filter_change,
+                    )
+                    dpg.add_group(tag="collection_rows")
+                with dpg.child_window(
+                    tag="related",
+                    width=570,
+                    height=-FOOTER_SPACE,
+                    border=False,
+                    show=False,
                 ):
                     pass
                 with dpg.child_window(
@@ -288,8 +413,18 @@ class App:
                         )
                         dpg.add_button(
                             label="Wróć do wyniku",
-                            callback=lambda: self.select_index(self.current_idx),
+                            callback=self.close_related,
                         )
+                    with dpg.group(tag="file_actions", horizontal=True, show=False):
+                        dpg.add_button(
+                            label="Kopiuj obraz",
+                            callback=lambda: self.queue_copy("image"),
+                        )
+                        dpg.add_button(
+                            label="Kopiuj ścieżkę",
+                            callback=lambda: self.queue_copy("path"),
+                        )
+                        dpg.add_button(label="Otwórz", callback=self.open_current)
                     dpg.add_combo(
                         tag="desc_variant",
                         items=[],
@@ -299,14 +434,6 @@ class App:
                     )
                     dpg.add_group(tag="preview_desc", show=False)
 
-            dpg.add_child_window(
-                tag="list_content",
-                width=-1,
-                height=-FOOTER_SPACE,
-                border=False,
-                show=False,
-            )
-
             with dpg.table(tag="footer", header_row=False, width=-1):
                 dpg.add_table_column()
                 dpg.add_table_column(width_fixed=True, init_width_or_weight=110)
@@ -314,9 +441,6 @@ class App:
                     dpg.add_text("", tag="status")
                     dpg.add_text("— F1: skróty", tag="status_hint", color=HINT_COLOR)
 
-        dpg.add_window(
-            label="Duplikaty", tag="related", show=False, width=720, height=460
-        )
         dpg.add_window(
             label="Skróty klawiszowe",
             tag="help",
@@ -383,10 +507,13 @@ class App:
     # --------------------------------------------------------------- search
 
     def on_query_change(self, *_: object) -> None:
-        if self.mode != "Szukaj":
-            return
         # Search-as-you-type: arm the debounce, the run loop fires it.
         self.search_at = time.monotonic() + DEBOUNCE_S
+
+    def on_balance_change(self, _sender: object, value: int) -> None:
+        self.embedding_weight = value / 100
+        if self.mode == "Szukaj":
+            self.on_query_change()
 
     def maybe_search(self) -> None:
         if self.search_at is None or time.monotonic() < self.search_at:
@@ -395,7 +522,10 @@ class App:
         self.do_search()
 
     def do_search(self) -> None:
-        if self.mode != "Szukaj":
+        if self.related_origin is not None:
+            self.close_related()
+        if self.mode == "Lista":
+            self.render_collection()
             return
         query = dpg.get_value("query").strip()
         if not query:
@@ -408,7 +538,11 @@ class App:
             return
         try:
             hits = search_stage.search_with_hashes(
-                self.con, self.cfg["embed"], query, self.top_n
+                self.con,
+                self.cfg["embed"],
+                query,
+                self.top_n,
+                embedding_weight=self.embedding_weight,
             )
             paths, hidden = current_result_paths(hits)
         # Endpoint down or timing out (OSError), a malformed or wrong-sized
@@ -418,6 +552,7 @@ class App:
             return
 
         self.last_query = query
+        self.last_embedding_weight = self.embedding_weight
         self.paths = paths
         dpg.delete_item("list_pane", children_only=True)
         for i, path in enumerate(paths):
@@ -460,7 +595,7 @@ class App:
         dpg.focus_item("query")
 
     def select_index(self, idx: int) -> None:
-        if self.mode != "Szukaj":
+        if self.mode != "Szukaj" or self.related_origin is not None:
             return
         if not (0 <= idx < len(self.paths)):
             return
@@ -516,7 +651,7 @@ class App:
 
     def on_escape(self, *_: object) -> None:
         if dpg.is_item_shown("related"):
-            dpg.hide_item("related")
+            self.close_related()
         elif dpg.is_item_shown("help"):
             dpg.hide_item("help")
         elif dpg.get_value("query"):
@@ -532,8 +667,6 @@ class App:
     # ------------------------------------------------------------- actions
 
     def current_path(self) -> str | None:
-        if self.mode != "Szukaj":
-            return None
         if self.preview_path:
             return self.preview_path
         dpg.set_value("status", "nie ma czego skopiować")
@@ -545,12 +678,18 @@ class App:
     def open_related(self, *, identical: bool) -> None:
         if self.preview_hash is None:
             return
+        self.related_identical = identical
         rows = related_files(self.con, self.preview_hash, identical=identical)
         paths, hidden = current_result_paths([(h, p) for h, p, _, _ in rows])
         available = set(paths)
+        if self.related_origin is None:
+            self.related_origin = self.preview_path
+            pane = "list_pane" if self.mode == "Szukaj" else "list_content"
+            self.related_scroll = dpg.get_y_scroll(pane)
         dpg.delete_item("related", children_only=True)
+        dpg.add_button(label="Wróć", parent="related", callback=self.close_related)
         title = "Identyczne kopie" if identical else "Grupa duplikatów"
-        dpg.configure_item("related", label=title)
+        dpg.add_text(title, parent="related")
         dpg.add_text(self.relative_path(self.preview_path), parent="related", wrap=680)
         dpg.add_text(
             f"{len(paths)} plików; kliknij ścieżkę, aby podejrzeć obraz.",
@@ -582,13 +721,12 @@ class App:
                 user_data=path,
             )
         dpg.show_item("related")
+        self.apply_layout()
 
     def on_related_select(
         self, _sender: object, _app_data: object, user_data: str
     ) -> None:
         self.show(user_data)
-        # Close the list so the selected image is immediately visible.
-        dpg.hide_item("related")
         dpg.focus_item("query")
 
     def on_copy(self, *_: object) -> None:
@@ -617,27 +755,180 @@ class App:
         # Reachable as Ctrl+O and as Shift+Enter (which routes through here).
         if not (key_down(CTRL_KEYS) or key_down(SHIFT_KEYS)):
             return
-        path = self.current_path()
-        if path:
-            dpg.set_value("status", open_externally(path))
+        self.open_current()
 
     # ---------------------------------------------------------- view toggles
 
     def on_mode_change(self, _sender: object, app_data: str) -> None:
+        if self.mode == "Lista" and self.search_at is not None:
+            self.render_collection()
+        pane = "list_pane" if self.mode == "Szukaj" else "list_content"
+        self.mode_state[self.mode] = (
+            dpg.get_value("query"),
+            self.preview_path,
+            dpg.get_y_scroll(pane),
+            dpg.get_y_scroll("preview_pane"),
+            dpg.get_value("status"),
+            self.related_origin,
+            dpg.get_y_scroll("related"),
+            self.related_identical,
+            self.related_scroll,
+        )
         self.mode = app_data
-        searching = self.mode == "Szukaj"
+        dpg.configure_item("search_balance_column", show=self.mode == "Szukaj")
+        dpg.configure_item("search_balance", show=self.mode == "Szukaj")
         self.search_at = None
         self.pending_copy = None
+        self.related_origin = None
         dpg.hide_item("related")
-        dpg.configure_item("query", enabled=searching)
-        dpg.configure_item("search_content", show=searching)
-        dpg.configure_item("list_content", show=not searching)
-        dpg.configure_item("status", show=searching)
-        if searching:
-            self.apply_layout()
-            if dpg.get_value("query").strip() != self.last_query:
-                self.on_query_change()
-            dpg.focus_item("query")
+        state = self.mode_state.get(self.mode, ("", None, 0, 0, "", None, 0, False, 0))
+        # Recreate the input so ImGui's active editing buffer cannot overwrite
+        # the other mode's restored text on the next frame.
+        query_parent = dpg.get_item_parent("query")
+        dpg.delete_item("query")
+        dpg.add_input_text(
+            tag="query",
+            parent=query_parent,
+            before="search_balance",
+            width=-1,
+            default_value=state[0],
+            callback=self.on_query_change,
+            hint="opisz mem…" if self.mode == "Szukaj" else "filtruj nazwy i ścieżki…",
+        )
+        if self.mode == "Lista" and self.collection is None:
+            self.collection, self.collection_hidden = collection_files(
+                self.con, self.cfg["describe"]
+            )
+            self.render_collection()
+        if state[1]:
+            self.show(state[1])
+        else:
+            self.clear_preview()
+        if state[5]:
+            # The related widget is shared; rebuild it for the restored mode.
+            self.open_related(identical=state[7])
+            self.related_origin = state[5]
+            self.related_scroll = state[8]
+        self.apply_layout()
+        pane = "list_pane" if self.mode == "Szukaj" else "list_content"
+        self.restore_scroll = {
+            pane: state[2],
+            "preview_pane": state[3],
+            "related": state[6],
+        }
+        if state[4] or self.mode == "Szukaj":
+            dpg.set_value("status", state[4])
+        if self.mode == "Szukaj" and (
+            state[0].strip() != self.last_query
+            or self.embedding_weight != self.last_embedding_weight
+        ):
+            self.on_query_change()
+        dpg.focus_item("query")
+
+    def on_filter_change(self, _sender, value):
+        self.collection_filter = value
+        self.render_collection()
+
+    def on_check(self, _sender, value, path):
+        selected = self.checked[self.mode]
+        selected.add(path) if value else selected.discard(path)
+        dpg.set_value("status", f"Zaznaczono {len(selected)} plików")
+
+    def select_collection(self, _sender, _value, path):
+        self.list_selected = path
+        for candidate, widget in self.collection_widgets.items():
+            dpg.set_value(widget, candidate == path)
+        self.show(path)
+
+    def render_collection(self):
+        files = filter_collection(
+            self.collection or [], dpg.get_value("query"), self.collection_filter
+        )
+        dpg.delete_item("collection_rows", children_only=True)
+        self.collection_widgets = {}
+        if files and self.collection_filter == "Duplikaty":
+            groups = {}
+            for file in files:
+                groups.setdefault(file.group, []).append(file)
+            counts = Counter(f.group for f in self.collection or [])
+            for digest, members in groups.items():
+                with dpg.tree_node(
+                    parent="collection_rows",
+                    label=f"{Path(members[0].path).name} — {counts[digest]} plików",
+                    default_open=False,
+                ):
+                    self.add_collection_table(members)
+        elif files:
+            with dpg.group(parent="collection_rows"):
+                self.add_collection_table(files)
+        else:
+            dpg.add_text("Brak plików pasujących do filtrów.", parent="collection_rows")
+        if self.list_selected and not any(f.path == self.list_selected for f in files):
+            self.list_selected = None
+            self.clear_preview()
+        dpg.set_value(
+            "status",
+            f"{len(files)} plików; zaznaczono {len(self.checked['Lista'])}; ukryto {self.collection_hidden} nieaktualnych",
+        )
+
+    def add_collection_table(self, files):
+        with dpg.table(
+            header_row=True, resizable=True, policy=dpg.mvTable_SizingStretchProp
+        ):
+            dpg.add_table_column(label="✓", width_fixed=True, init_width_or_weight=24)
+            for label, weight in (
+                ("Nazwa", 3),
+                ("Folder", 2),
+                ("Kopie", 1),
+                ("Stan indeksowania", 2),
+            ):
+                dpg.add_table_column(label=label, init_width_or_weight=weight)
+            for file in files:
+                with dpg.table_row():
+                    dpg.add_checkbox(
+                        default_value=file.path in self.checked["Lista"],
+                        callback=self.on_check,
+                        user_data=file.path,
+                    )
+                    widget = dpg.add_selectable(
+                        label=Path(file.path).name,
+                        default_value=file.path == self.list_selected,
+                        callback=self.select_collection,
+                        user_data=file.path,
+                        span_columns=True,
+                    )
+                    self.collection_widgets[file.path] = widget
+                    dpg.add_text(str(Path(self.relative_path(file.path)).parent))
+                    dpg.add_text(str(file.copies))
+                    state = {
+                        None: "Nieopisany",
+                        "described": "Opisany",
+                        "failed_describe": "Błąd opisu",
+                    }[file.status]
+                    if file.indexed:
+                        state += " · w indeksie"
+                    dpg.add_text(state)
+
+    def close_related(self, *_):
+        origin = self.related_origin
+        self.related_origin = None
+        dpg.hide_item("related")
+        self.apply_layout()
+        if origin:
+            self.show(origin)
+        pane = "list_pane" if self.mode == "Szukaj" else "list_content"
+        self.restore_scroll = {pane: self.related_scroll}
+
+    def queue_copy(self, kind):
+        if self.current_path():
+            self.pending_copy = (kind, self.preview_path)
+
+    def open_current(self, *_):
+        if self.current_path():
+            try:
+                dpg.set_value("status", open_externally(self.preview_path))
+            except OSError as error:
+                dpg.set_value("status", f"nie mogę otworzyć: {error}")
 
     def on_toggle_desc(self, *_: object) -> None:
         if not key_down(CTRL_KEYS):
@@ -656,9 +947,17 @@ class App:
             dpg.show_item("help")
 
     def apply_layout(self) -> None:
-        dpg.configure_item("list_pane", show=not self.fullscreen)
-        has_desc = bool(self.variants) and self.show_desc
-        dpg.configure_item("desc_variant", show=has_desc)
+        related = dpg.is_item_shown("related")
+        dpg.configure_item(
+            "list_pane",
+            show=self.mode == "Szukaj" and not self.fullscreen and not related,
+        )
+        dpg.configure_item(
+            "list_content",
+            show=self.mode == "Lista" and not self.fullscreen and not related,
+        )
+        has_desc = self.preview_path is not None and self.show_desc
+        dpg.configure_item("desc_variant", show=bool(self.variants) and self.show_desc)
         dpg.configure_item("preview_desc", show=has_desc)
         self.pane_w = 0  # force a refit on the next frame
 
@@ -670,8 +969,6 @@ class App:
         dpg.focus_item("query")
 
     def on_tab(self, *_: object) -> None:
-        if self.mode != "Szukaj":
-            return
         labels = list(self.variants)
         if len(labels) < 2:
             return
@@ -752,6 +1049,7 @@ class App:
         self.preview_hash = digest
         dpg.set_value("preview_path", self.relative_path(path))
         dpg.show_item("preview_path")
+        dpg.show_item("file_actions")
         group = related_files(self.con, digest, identical=False)
         available, _ = current_result_paths([(h, p) for h, p, _, _ in group])
         dpg.configure_item("preview_actions", show=len(available) > 1)
@@ -799,6 +1097,7 @@ class App:
         self.preview_path = None
         self.preview_hash = None
         dpg.hide_item("preview_path")
+        dpg.hide_item("file_actions")
         dpg.hide_item("preview_actions")
         dpg.hide_item("related")
         if dpg.does_item_exist("preview_img"):
@@ -820,8 +1119,6 @@ class App:
     def handle_resize(self) -> None:
         """Refit the image and re-wrap the description when the pane changes
         width (window resize, fullscreen toggle) - neither adapts on its own."""
-        if self.mode != "Szukaj":
-            return
         pane_w = dpg.get_item_rect_size("preview_pane")[0]
         if not pane_w or abs(pane_w - self.pane_w) < 20:
             return
@@ -838,6 +1135,10 @@ class App:
             self.maybe_search()
             self.handle_resize()
             dpg.render_dearpygui_frame()
+            if self.restore_scroll is not None:
+                for pane, scroll in self.restore_scroll.items():
+                    dpg.set_y_scroll(pane, scroll)
+                self.restore_scroll = None
             self.flush_copy()
         dpg.destroy_context()
 
