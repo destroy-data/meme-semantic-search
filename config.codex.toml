@@ -1,0 +1,16 @@
+# Codex przez lokalne CLI (istniejące logowanie, bez klucza API w tym pliku).
+# Reszta jak w config.toml, więc opisy lądują w tej samej bazie obok grokowych.
+db_path = "memes.db"
+image_dir = "/home/marcin/internet"
+phash_threshold = 8
+
+[describe]
+backend = "codex-cli"  # uruchamia `codex exec`
+model = "gpt-6-astra"  # przekazywany do --model
+prompt_version = "vcodex1-master"
+effort_level = "xhigh"  # przekazywany jako model_reasoning_effort
+
+[embed]
+base_url = "http://localhost:2138/v1"
+api_key = "ollama"
+model = "bge-m3"
