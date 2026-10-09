@@ -56,14 +56,26 @@ def fts_hits(con: sqlite3.Connection, query: str) -> list[str]:
 
 
 def search_with_hashes(
-    con: sqlite3.Connection, embed_cfg: dict, query: str, top_n: int
+    con: sqlite3.Connection,
+    embed_cfg: dict,
+    query: str,
+    top_n: int,
+    *,
+    embedding_weight: float = 0.5,
 ) -> list[tuple[str, str]]:
-    """Return ranked ``(hash, path)`` pairs for callers that need identity too."""
-    vector = common.request_embedding(embed_cfg, query)
+    """Return ranked pairs; 0 means FTS only, 1 means embeddings only."""
+    if not 0 <= embedding_weight <= 1:
+        raise ValueError("embedding_weight must be between 0 and 1")
+    rankings = []
+    if embedding_weight > 0:
+        vector = common.request_embedding(embed_cfg, query)
+        rankings.append((embedding_weight, vec_hits(con, vector)))
+    if embedding_weight < 1:
+        rankings.append((1 - embedding_weight, fts_hits(con, query)))
     scores: dict[str, float] = {}
-    for hits in (vec_hits(con, vector), fts_hits(con, query)):
+    for weight, hits in rankings:
         for rank, digest in enumerate(hits, start=1):
-            scores[digest] = scores.get(digest, 0.0) + 1.0 / (RRF_K + rank)
+            scores[digest] = scores.get(digest, 0.0) + weight / (RRF_K + rank)
     ranked = sorted(scores, key=lambda h: (-scores[h], h))[:top_n]
     return [
         (h, con.execute("SELECT path FROM memes WHERE hash = ?", (h,)).fetchone()[0])
@@ -72,10 +84,20 @@ def search_with_hashes(
 
 
 def search(
-    con: sqlite3.Connection, embed_cfg: dict, query: str, top_n: int
+    con: sqlite3.Connection,
+    embed_cfg: dict,
+    query: str,
+    top_n: int,
+    *,
+    embedding_weight: float = 0.5,
 ) -> list[str]:
     """Return ranked paths; the stable public API used by the CLI."""
-    return [path for _, path in search_with_hashes(con, embed_cfg, query, top_n)]
+    return [
+        path
+        for _, path in search_with_hashes(
+            con, embed_cfg, query, top_n, embedding_weight=embedding_weight
+        )
+    ]
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
