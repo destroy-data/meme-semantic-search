@@ -103,9 +103,26 @@ uv run memes.py gui --config config.test.toml
 ```
 
 - [ ] Na górze, po prawej od pola wyszukiwania, jest przełącznik „Szukaj / Lista”.
-  Tryb „Lista” jest pusty, pole zapytania jest nieaktywne, a skróty wyszukiwania
-  i nawigacji nie zmieniają mema. Powrót do „Szukaj” zachowuje zapytanie,
-  wyniki, zaznaczenie i podgląd.
+  „Lista” pokazuje tabelę po lewej i wspólny podgląd po prawej. Wpisany tekst
+  filtruje nazwy i ścieżki bez wywoływania modelu. Powrót do każdego trybu
+  zachowuje jego zapytanie, podgląd, zaznaczenie i przewinięcie obu paneli.
+- [ ] Między polem wyszukiwania a przełącznikiem jest suwak „FTS / Embeddingi”.
+  Domyślne 50% zachowuje dotychczasowe sortowanie. Skrajnie w lewo: tylko FTS
+  (działa też bez endpointu embeddingów), skrajnie w prawo: tylko embeddingi.
+  Zmiana odświeża wyniki po krótkim opóźnieniu. Suwak znika w „Liście”, a jego
+  pozycja i kolejność kontrolek przetrwają wielokrotne przełączanie trybów.
+- [ ] Tabela zawiera nazwę, folder, liczbę identycznych kopii (wraz z bieżącym
+  plikiem) i stan opisu dla aktywnej konfiguracji; obecność wektora jest osobna.
+  Kliknięcie wiersza zmienia podgląd, checkbox tylko zaznaczenie pliku.
+- [ ] Sprawdź wszystkie pięć filtrów. „Nieopisane” obejmuje brak próby dla
+  aktywnej konfiguracji, „Błędy” jej nieudaną próbę, także jeśli inny wariant
+  ma poprawny opis. „Duplikaty” zawiera rozwijane grupy co najmniej dwóch
+  dostępnych plików, w tym grupy wyłącznie identycznych kopii. Liczebność grupy
+  dotyczy wszystkich dostępnych plików, nawet po filtrowaniu ścieżki.
+- [ ] Filtr, rozwinięte grupy i checkboxy przetrwają przejście do „Szukaj”
+  i powrót. Brak dopasowań daje komunikat i usuwa niepasujący podgląd.
+- [ ] Bez działającego Ollama lista, filtry i podgląd nadal działają.
+- [ ] Po zmianach kolekcji przez CLI uruchom GUI ponownie, by odczytać nowe dane.
 - [ ] Wpisanie zapytania uruchamia wyszukiwanie po krótkiej pauzie, a Enter
   wykonuje je od razu.
 - [ ] Kliknięcie oraz strzałki zmieniają zaznaczenie, podgląd obrazu i opis
@@ -145,17 +162,18 @@ uv run memes.py gui --config config.test.toml
 - [ ] „Identyczne kopie” pokazuje wszystkie dostępne zeskanowane ścieżki
   o tym samym hashu, także kopie niebędące główną. Mają wspólne warianty opisów.
 - [ ] Po kliknięciu ścieżki podgląd, kopiowanie i otwieranie dotyczą tej kopii.
-  „Wróć do wyniku” przywraca wybrany wynik, a Esc zamyka listę.
+  Lista grupy/kopii jest w głównym oknie. „Wróć” przywraca podgląd, z którego
+  otwarto grupę, także w „Liście”; Esc zamyka listę. Przełączenie trybu
+  zachowuje otwartą grupę lub listę identycznych kopii.
 - [ ] Nieaktualne ścieżki są ukrywane z komunikatem o ich liczbie. Baza bez
   `meme_files` nadal pozwala przeglądać znane grupy podobnych obrazów.
 
 ### Pozostałe rozszerzenie GUI — po implementacji
 
-Lista wszystkich grup i usuwanie plików nie są jeszcze zaimplementowane.
+Usuwanie, przenoszenie, zmiana nazw i indeksowanie z GUI są odłożone.
+Checkboxy obecnie tylko przechowują zaznaczenie.
 Usuwanie sprawdzaj wyłącznie na kopii kolekcji przygotowanej do weryfikacji.
 
-- [ ] Osobny widok pokazuje wszystkie grupy z co najmniej dwoma członkami,
-  z poprawnymi liczebnościami, niezależnie od zapytania wyszukiwania.
 - [ ] W wynikach i grupach można wybrać jeden lub wiele memów do usunięcia.
   Z dysku znikają wyłącznie wskazane pliki, a ich wpisy w `meme_files`
   znikają z bazy. Rekord mema, opisy, FTS i wektor znikają dopiero po
@@ -183,3 +201,68 @@ uv run memes.py index --config config.test.toml --limit 10
   nowa.
 - [ ] Na koniec wykonaj kilka zapisanych przykładowych zapytań z `AGENTS.md` i
   oceń wyniki ręcznie, zanim uruchomisz indeksowanie całej kolekcji.
+
+## Weryfikacja implementacji Lista (2026-10-09)
+
+Na tymczasowej kolekcji sprawdzono programowo wszystkie filtry, liczebności
+fizycznych kopii, brakujące/podmienione ścieżki i bazę bez `meme_files`.
+Test z rzeczywistym oknem Dear PyGui i renderowaniem klatek przeszedł tworzenie
+tabeli, callbacki podglądu i checkboxów, przełączanie trybów z osobnymi
+zapytaniami, powrót z identycznych kopii, pusty wynik oraz widoczność F1.
+Nie zastępuje to ręcznej oceny układu, klikania i przewijania dużej kolekcji.
+
+## Backend codex-cli
+
+- [ ] Ustaw `backend = "codex-cli"`, dostępny model wizyjny i prompt w osobnym
+  TOML (`prompt_version = "vcodex1-master"`); `base_url` i `api_key` nie są
+  wymagane. Użyj testowej bazy.
+- [ ] `model_instructions_file` wskazuje plik z dokładną treścią wybranego promptu.
+  Stdin zawiera wyłącznie polecenie dla mema i informacje o klatkach; stały prompt
+  nie jest w nim powtarzany. Zmiana `prompt_version` nadal tworzy osobny wariant.
+- [ ] Nagłówek `-v` pokazuje `[N tokens]` jako sumę input/output z `turn.completed`;
+  cached input nie jest doliczane drugi raz. Przy braku usage licznik jest pomijany.
+- [ ] `describe --limit 1 -v` zapisuje surowy JSON; drugi przebieg go pomija.
+  `--model`, `--effort`, `--path` i `--retry-failed` działają jak wcześniej.
+- [ ] Sprawdź PNG/JPEG oraz animacje GIF/WebP/APNG, także ścieżkę ze spacjami.
+  Wszystkie wybrane klatki trafiają do modelu w kolejności chronologicznej.
+- [ ] Błąd procesu, limit konta, timeout i brak końcowej odpowiedzi zatrzymują
+  przebieg bez rekordu dla bieżącego obrazu. Ponowne uruchomienie go podejmuje.
+- [ ] Niepoprawny końcowy JSON, powtórzone keywords, zły humor_type lub uszkodzony
+  obraz dają `failed_describe`; pozostałe obrazy są przetwarzane dalej.
+- [ ] Pierwszy Ctrl+C kończy i zapisuje bieżący opis; drugi przerywa proces.
+  Timeout usuwa też procesy potomne. Pliki tymczasowe są sprzątane.
+- [ ] Backend Claude nadal odczytuje `structured_output` i rozpoznaje swój limit
+  użycia po polach typowanych, mimo wspólnej funkcji uruchamiania procesu.
+
+Weryfikacja 2026-10-09: skrypt `/tmp/check_codex_backend.py` przeszedł testy
+adaptera z symulowaną odpowiedzią CLI (argumenty, GIF/PNG, schemat, zachowanie
+surowego JSON, walidacja i sprzątanie), tymczasowej bazy (błąd bez wpisu,
+wznowienie/pominięcie, wariant effort i błędny JSON), regresji odpowiedzi/limitu
+Claude oraz rzeczywistego subprocessu (stdin/stdout/timeout). Przerwanie procesu
+sprawdzono z mockiem. Nie wykonano opisu przez usługę Codex; logowanie,
+dostępność wybranego modelu i pełny przebieg sieciowy wymagają próby `--limit 1`.
+
+Weryfikacja przejścia na instructions file: adapter Codexa z symulowaną
+odpowiedzią dostał dokładną treść `vcodex1-master.txt` w pliku UTF-8 wskazanym
+przez `model_instructions_file`. Sprawdzono statyczny obraz i animację:
+stdin zawierał tylko zadanie oraz timestampy klatek, a plik instrukcji sam prompt.
+Sprawdzono skalowanie obrazu statycznego, sprzątanie plików i transporty pozostałych
+backendów. Formatowanie i lint przeszły. Nie wykonano wywołania usługi Codex.
+
+## Wspólne klatki animacji
+
+- [ ] Animacja z cięciami: jedna klatka ze środka każdego ujęcia (`scene > 0.15`).
+- [ ] Bez cięć: klatka ze środka i ostatnia; ten sam indeks klatki tylko raz.
+- [ ] Zmienne czasy klatek w GIF/WebP/APNG i APNG z osobnym podglądem statycznym.
+- [ ] Klatki zachowują natywną rozdzielczość; statyczne obrazy nadal są skalowane
+  na ścieżkach HTTP/Codex. Pliki tymczasowe znikają po żądaniu/błędzie.
+- [ ] Brak `ffmpeg` lub błąd ekstrakcji zapisuje błąd tylko danego obrazu;
+  kolejny obraz statyczny nadal jest opisywany.
+
+Weryfikacja 2026-10-09: `/tmp/check_meme_animation_frames.py` użył prawdziwego
+FFmpeg do GIF/WebP/APNG (cięcia, brak cięć, zmienne czasy, natywna rozdzielczość,
+APNG z osobnym podglądem, ścieżki ze spacjami). Transporty HTTP/Claude/Codex
+sprawdzono z symulowanymi odpowiedziami modeli i tymczasową bazą, także kolejność,
+timestampy, zapis JSON, sprzątanie oraz kontynuację po braku FFmpeg.
+Ekstrakcja przeszła też na trzech GIF-ach z rzeczywistej kolekcji (20, 24 i 51
+klatek źródłowych). Nie wykonano płatnych wywołań modeli ani zmian w `memes.db`.
