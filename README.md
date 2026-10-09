@@ -39,6 +39,65 @@ of an HTTP call, billed against a Claude Code subscription; when its usage limit
 runs out, `describe` waits and retries the same image rather than marking it
 failed.
 
+Animated GIF/WebP/APNG files share one frame-selection path across all describe
+backends. Install `ffmpeg` on PATH. Pillow decodes frames and their durations;
+FFmpeg detects cuts with `scene > 0.15`. Each shot contributes its middle frame;
+without cuts, the middle and last frames are sent. Repeated selections of the
+same frame are collapsed. Selected PNGs retain native resolution and are sent
+in chronological order with timestamps (HTTP image URLs, Claude file paths,
+Codex image attachments). Temporary files are removed after the request.
+No model is asked to extract animation frames. Extraction errors become
+per-image failures; existing descriptions are still skipped. Use a new prompt
+version when comparing the new inputs with older first-frame descriptions.
+
+### Describe through Codex CLI
+
+In a copy of your TOML, replace `[describe]` with:
+
+```toml
+[describe]
+backend = "codex-cli"
+model = "gpt-5.4" # use a vision-capable model available to your Codex account
+prompt_version = "vcodex1-master" # prompts/vcodex1-master.txt
+effort_level = "low" # optional; supported values depend on the model
+```
+
+Run `uv run memes.py describe --config config.codex.toml --limit 1 -v`.
+Requires a logged-in `codex` on PATH and the flags available in CLI 0.162.0
+(the version used for implementation). It uses existing CLI authentication;
+`base_url` and `api_key` from the meme config are unused. Model and effort
+CLI overrides work as before. Billing follows the CLI's login method.
+
+Each still is attached as PNG (max side 1440); animations attach the selected
+frames at native resolution. `prompts/<prompt_version>.txt` is copied verbatim
+to a temporary instructions file and passed via `model_instructions_file`,
+replacing Codex's built-in main instructions. Stdin carries only the request to
+describe the meme and, for animations, the frame order and timestamps.
+The output schema and final-response file are separate temporary files. Runs use
+a temporary working directory, read-only sandbox, no user config/rules or
+AGENTS.md, and disable shell, web search, hooks, apps, remote plugins and host
+skill discovery. Managed policy and additional environment/tool instructions
+can still apply. Session logging is enabled for auditing.
+With `-v`, the per-meme header also shows `[N tokens]` from Codex's completed
+turn: input plus output tokens, including cached input once. If usage is absent,
+the token count is omitted.
+
+Codex requires `additionalProperties: false`; the temporary schema adds it and
+omits unsupported `uniqueItems`, which is checked locally instead. The canonical
+schema and prompt version are unchanged. Raw final JSON is stored verbatim.
+
+A Codex process failure, timeout or missing completed response stops the run
+**without writing a description row**. Re-run after resolving the error; no
+`--retry-failed` is needed for that image. Unlike Claude, Codex quota failures
+are not automatically slept/retried: JSONL errors do not provide a verified
+stable quota discriminator here. Invalid completed descriptions and unreadable
+images still become `failed_describe`. Both CLIs share timeout/Ctrl+C handling.
+The backend is not part of the existing DB uniqueness key; equal
+`(model, prompt_version, effort_level)` tuples still share one row.
+
+CLI protocol reference: [OpenAI non-interactive mode](https://developers.openai.com/codex/noninteractive).
+Instructions setting: [OpenAI configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
 ## Usage
 
 ```fish
@@ -98,7 +157,8 @@ It takes the description matching `[describe]` and, failing that, falls back to
 the same model at another effort level, then to any model with the same prompt.
 
 **`search`** embeds the query, runs a KNN over the vectors and an FTS5 `MATCH`,
-then fuses the two rankings with Reciprocal Rank Fusion (`Σ 1/(60 + rank)`). The
+then fuses the two rankings with weighted Reciprocal Rank Fusion
+(`Σ weight/(60 + rank)`). Equal weights preserve the original ranking. The
 vector side handles paraphrase; FTS catches exact strings and proper nouns the
 embedder blurs. RRF needs no score calibration between them, which is the point.
 
@@ -139,9 +199,31 @@ one implementation. After editing: `ruff format . && ruff check .`
 
 ## GUI scope
 
-The top row has a **Szukaj / Lista** switch to the right of the search field.
-**Lista** is currently an empty placeholder; searching is disabled there.
-Returning to **Szukaj** restores the query, results and preview.
+The top row has a **FTS / Embeddingi** balance slider between the search field
+and the **Szukaj / Lista** switch. It starts at 50% embeddings / 50% FTS. Move
+left for exact text matching, right for semantic similarity; the endpoints use
+only FTS or only embeddings. Results refresh after a short debounce. The slider
+is hidden in Lista and retains its setting when switching modes. CLI search
+continues to use equal weights.
+**Szukaj** performs semantic search; **Lista** browses all scanned physical
+files, including memes without descriptions or embeddings. Its query field
+filters names and paths locally (case-insensitive, no model calls).
+
+The collection table shows name, folder relative to `image_dir`, number of
+identical copies (including the displayed file), and indexing state. Clicking a
+row previews it; checkboxes independently select physical paths for future bulk
+operations. Switching modes preserves each query, preview, selection and scroll,
+as well as the collection filter and expanded groups. Status and F1 stay visible.
+
+Filters: **Wszystkie**, **Duplikaty** (expandable perceptual groups with at least
+two available physical files, including groups made only of identical copies),
+**Identyczne kopie**, **Nieopisane**, **Błędy**. Description states refer to the
+active `(model, prompt_version, effort_level)`; an additional “w indeksie” marker
+means a vector exists, which may come from a different description variant.
+“Nieopisane” means no attempt for the active config, “Błędy” means a failed attempt.
+Group sizes count available physical files before the path filter is applied.
+Collection data is loaded on first entering Lista; restart the GUI after a CLI
+scan or indexing run to reload it.
 
 The current GUI searches as you type, previews selected images, lets you inspect
 description variants, and supports keyboard navigation, copying an image or its
@@ -150,7 +232,7 @@ path, and opening it in an external viewer.
 The GUI also displays the path below the image, relative to `image_dir`.
 From the selected meme, use **Grupa duplikatów** to browse its perceptual group
 (including physical copies), or **Identyczne kopie** for files with exactly the
-same content. Lists identify the representative and primary copies. Click a
+same content. Lists open in the main window’s left panel and identify the representative and primary copies. Click a
 path to preview that file; descriptions, copying and opening then use the
 previewed file. **Wróć do wyniku** returns to the selected search result. Esc
 closes the list. Missing or replaced files are hidden with a count.
@@ -160,15 +242,15 @@ populate `meme_files` and discover all identical copies.
 
 The following scope extension is agreed but **not implemented yet**:
 
-1. Browse all duplicate groups independently of search, with group sizes and
-   access to members even if they have not been described or embedded.
-2. Select one or multiple memes and delete their files from disk, primarily to
+1. Delete selected physical files from disk, primarily to
    clean up duplicates. This is also available for ordinary search results.
    Only selected files are removed; successful deletions update the database,
    search results and groups. File deletion failures remain visible and retain
    their database records.
 
-Deleting a representative selects a new one from the remaining group using the
+2. Moving, renaming and indexing from the GUI are deferred to a later stage.
+
+Planned deletion of a representative will select a new one from the remaining group using the
 existing grouping rules, preserving surviving descriptions and embeddings.
 The new representative may still need CLI indexing before appearing in search.
 

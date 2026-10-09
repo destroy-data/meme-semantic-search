@@ -235,6 +235,26 @@ means retrying a failed row overwrites the old failure cleanly.
   against Ollama/xAI without an API key; the remaining tradeoff is the CLI's own
   system prompt in context. `--safe-mode` keeps `CLAUDE.md`, skills, plugins,
   hooks and MCP out of the subprocess while leaving OAuth intact.
+- Third backend, `backend = "codex-cli"`: `codex exec` with attached PNGs
+  (stills max side 1440; selected animation frames at native resolution), `--output-schema` and
+  `--output-last-message`. Existing CLI login supplies authentication; config
+  `model` and optional `effort_level` select model/reasoning. Requires modern
+  CLI flags (implementation checked against 0.162.0). Temporary cwd,
+  read-only sandbox, user config/rules and AGENTS.md disabled, plus shell/web,
+  hooks/apps/remote plugins and host skill discovery disabled. Managed policy
+  and additional environment/tool instructions may still apply. The versioned
+  `prompts/<prompt_version>.txt` is copied verbatim to a temporary file passed via
+  `model_instructions_file`, replacing the built-in main model instructions.
+  Stdin carries only the per-meme request and animation frame order/timestamps.
+  `config.codex.toml` uses `prompt_version = "vcodex1-master"`. Session logging
+  is enabled for auditing (no `--ephemeral`).
+  A temporary schema adds `additionalProperties: false` and drops unsupported
+  `uniqueItems`; local validation enforces the canonical contract. Raw final
+  JSON is preserved. Process failures/timeouts/incomplete runs abort without
+  writing a row (including quota errors); re-run resumes. Unlike Claude, no
+  automatic quota wait without a verified typed discriminator. Invalid final
+  descriptions and unreadable images remain per-image failures. Backend is
+  not part of the description uniqueness tuple.
 - CLI flags: `--retry-failed` (also re-pick `failed_describe` rows — without
   it, both successes and failures count as "done"), `--limit N`, and
   `--model` / `--effort` overrides so an alternate variant can be tried without
@@ -259,9 +279,15 @@ means retrying a failed row overwrites the old failure cleanly.
   — editing it changes what a re-run produces under an unchanged config tuple,
   and `INSERT OR REPLACE` will overwrite the older-shaped row. Convention:
   bump `prompt_version` whenever the schema changes.
-- Images are downscaled to max side 1440 px (`MAX_SIDE`; JPEG, quality 90) before being sent
-  as a data URL; smaller images pass through untouched, gifs are flattened to
-  their first frame. `temperature=0`, `max_tokens` unset (qwen3-vl reasoning
+- Still images are downscaled to max side 1440 px (`MAX_SIDE`; JPEG, quality 90) before being sent
+  as a data URL; smaller images pass through untouched. All three backends share
+  `prepare_description_images`: Pillow decodes GIF/WebP/APNG frames and durations,
+  FFmpeg detects cuts with `scene > 0.15`, and one middle frame per shot is selected.
+  Without cuts, select the middle and last frame; collapse repeated selections of
+  the same frame. Selected PNGs retain native resolution and are sent together in
+  chronological order, with timestamps. Requires `ffmpeg` on PATH for animations;
+  failures are per-image errors, never a silent first-frame fallback. Temporary
+  files live through the request and are then removed. `temperature=0`, `max_tokens` unset (qwen3-vl reasoning
   tokens count against the budget but not against `usage.completion_tokens`, so
   any cap silently truncates mid-CoT and returns empty content).
 - The description JSON has these fields (the prompt itself is in Polish since
@@ -340,16 +366,38 @@ CLI: takes a free-text query, returns top-N file paths.
    and drop rows where `perceptual_duplicate_of IS NOT NULL` so near-duplicates
    don't clutter results.
 3. Fuse with Reciprocal Rank Fusion:
-   `score[id] = Σ 1 / (60 + rank_in_list)` across both lists.
+   `score[id] = Σ weight / (60 + rank_in_list)` across both lists. Default equal
+   weights preserve the original ranking. `search()` / `search_with_hashes()`
+   accept keyword-only `embedding_weight` (0–1; default 0.5); the FTS weight is
+   `1 - embedding_weight`. A zero-weight source is skipped entirely.
 4. Output: top-N paths, one per line (composable with `imv`/`feh`/`xargs`),
    plus a `--show` flag that opens results in an image viewer.
 
 ### Stage 5 — GUI (`gui`)
 
 The GUI supports finding, previewing and copying memes, inspecting description
-variants, and now also reviewing duplicates and deleting selected files.
+variants, browsing the collection, and reviewing duplicates. File mutations
+and indexing from the GUI remain deferred.
 
 **Implemented in the GUI:**
+
+- A `FTS / Embeddingi` slider sits between the shared query field and the
+  `Szukaj / Lista` switch. Default 50/50 preserves the existing ranking; left
+  uses FTS only, right uses embeddings only. Changes refresh search after the
+  usual debounce. Hidden in Lista, with its setting retained across mode switches.
+- `Szukaj / Lista` switch to the right of the slider. Search keeps
+  semantic retrieval; Lista filters physical filenames/paths locally.
+- Lista has a table (name, relative folder, identical-copy count including self,
+  indexing state) and the shared preview. Row clicks preview; checkboxes select
+  paths independently, without performing operations.
+- Filters: Wszystkie, Duplikaty (expandable groups, at least two available
+  physical files), Identyczne kopie, Nieopisane, Błędy. Description status uses
+  the active config tuple; vector presence is reported independently.
+- Each mode retains query, preview, selection and scroll; collection filters
+  and expanded groups survive mode switches. The footer and F1 remain visible.
+- Collection data is loaded on first opening Lista; restart after external
+  scan/index changes. Missing/replaced files are excluded before counting copies.
+
 
 - Show the selected meme's path directly below its image, relative to the
   configured `image_dir`. Apply this in search and duplicate views. Keep the
@@ -358,19 +406,16 @@ variants, and now also reviewing duplicates and deleting selected files.
 - From a meme, open its duplicate group: the representative plus all rows
   pointing to it, with each image available for preview and the representative
   identified. A meme with no duplicates has a clear empty state.
-The selected-meme views open file lists; clicking a path previews it in the
+The selected-meme views open file lists in the main window’s left panel; clicking a path previews it in the
 main pane. Copy/open actions use the previewed file and descriptions are loaded
 by content hash, including for non-primary copies. `Wróć do wyniku` returns to
-the selected search result. Esc closes the list. Hide missing or replaced files
+the originating preview in either mode. Esc closes the list. Hide missing or replaced files
 and report their count. Legacy databases without `meme_files` use known paths
 from `memes` until the next scan.
 
 **Scope extension agreed; not implemented yet:**
 
-- Offer a separate view of all duplicate groups in the indexed collection,
-  independent of the current search query. Include only groups with at least
-  two members; show their sizes and allow browsing their members, even when
-  those members have no descriptions or embeddings.
+- Moving, renaming and indexing from the GUI are deferred.
 - Allow selecting one or multiple memes and deleting their files from disk,
   from both search and duplicate views. The primary use is duplicate cleanup,
   but deletion is not restricted to non-representatives. Delete only explicitly
