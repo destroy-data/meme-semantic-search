@@ -39,6 +39,14 @@ def connect(
     con.enable_load_extension(False)
     if init_schema:
         con.executescript(Path(__file__).with_name("schema.sql").read_text())
+    columns = {row[1] for row in con.execute("PRAGMA table_info(descriptions)")}
+    added_columns = False
+    for name, sql_type in (("total_tokens", "INTEGER"), ("usage_json", "TEXT")):
+        if columns and name not in columns:
+            con.execute(f"ALTER TABLE descriptions ADD COLUMN {name} {sql_type}")
+            added_columns = True
+    if added_columns:
+        con.commit()
     con.execute("PRAGMA foreign_keys = ON")
     return con
 
