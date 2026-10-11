@@ -15,6 +15,7 @@ from pathlib import Path
 import dearpygui.dearpygui as dpg
 
 import common
+import scan as scan_stage
 import search as search_stage
 
 
@@ -262,6 +263,100 @@ def filter_collection(
     ]
 
 
+def preserve_group_index(con, digest, group):
+    """Keep a group's search index when its indexed member loses its last copy."""
+    vector = con.execute(
+        "SELECT embedding FROM memes_vec WHERE hash = ?", (digest,)
+    ).fetchone()
+    if vector is None:
+        return
+    marks = ",".join("?" for _ in group)
+    rows = con.execute(
+        f"SELECT hash, path FROM ({indexed_files_sql(con)}) WHERE hash IN ({marks})",
+        group,
+    ).fetchall()
+    candidates = sorted(
+        {h for h, p in rows if h != digest and scan_stage.file_matches(p, h, {})}
+    )
+    if not candidates:
+        return
+    # Prefer an existing indexed survivor; otherwise retain this group's vector
+    # on an available member. Do not attribute the deleted image's description
+    # to another image or overwrite a survivor's own index.
+    for target in candidates:
+        if con.execute("SELECT 1 FROM memes_vec WHERE hash = ?", (target,)).fetchone():
+            return
+    target = candidates[0]
+    con.execute(
+        "INSERT INTO memes_vec(hash, embedding) VALUES (?, ?)", (target, vector[0])
+    )
+    con.execute("DELETE FROM memes_fts WHERE hash = ?", (target,))
+    con.execute(
+        "INSERT INTO memes_fts(hash, transcription, keywords, template) "
+        "SELECT ?, transcription, keywords, template FROM memes_fts WHERE hash = ?",
+        (target, digest),
+    )
+
+
+def delete_files(con, files, threshold):
+    """Delete only confirmed paths whose SHA-256 still matches the database."""
+    removed, errors = [], []
+    # Upgrade legacy copy tracking without running scan or inference.
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS meme_files (path TEXT PRIMARY KEY, "
+        "hash TEXT NOT NULL REFERENCES memes(hash) ON DELETE CASCADE)"
+    )
+    con.execute("INSERT OR IGNORE INTO meme_files SELECT path, hash FROM memes")
+    con.commit()
+    # Snapshot memberships: deleting a representative clears FK references,
+    # but later deletions in this batch must still see the original group.
+    groups = {}
+    for digest, group in con.execute(
+        "SELECT hash, COALESCE(perceptual_duplicate_of, hash) FROM memes"
+    ):
+        groups.setdefault(group, []).append(digest)
+    memberships = {h: members for members in groups.values() for h in members}
+    for digest, path in files:
+        try:
+            recorded = con.execute(
+                "SELECT hash FROM meme_files WHERE path = ?", (path,)
+            ).fetchone()
+            if recorded != (digest,) or not scan_stage.file_matches(path, digest, {}):
+                raise OSError("plik zniknął lub zmienił zawartość (SHA-256)")
+            Path(path).unlink()
+        except OSError as error:
+            errors.append((path, str(error)))
+            continue
+        with con:
+            con.execute("DELETE FROM meme_files WHERE path = ?", (path,))
+            copies = con.execute(
+                "SELECT path FROM meme_files WHERE hash = ? ORDER BY path", (digest,)
+            ).fetchall()
+            survivors = [p for (p,) in copies if scan_stage.file_matches(p, digest, {})]
+            if survivors:
+                primary = con.execute(
+                    "SELECT path FROM memes WHERE hash = ?", (digest,)
+                ).fetchone()[0]
+                if primary not in survivors:
+                    con.execute(
+                        "UPDATE memes SET path = ? WHERE hash = ?",
+                        (survivors[0], digest),
+                    )
+            else:
+                preserve_group_index(con, digest, memberships[digest])
+                con.execute(
+                    "UPDATE memes SET perceptual_duplicate_of = NULL "
+                    "WHERE perceptual_duplicate_of = ?",
+                    (digest,),
+                )
+                for table in ("descriptions", "memes_fts", "memes_vec", "memes"):
+                    con.execute(f"DELETE FROM {table} WHERE hash = ?", (digest,))
+        removed.append(path)
+    if removed:
+        scan_stage.regroup(con, threshold)
+    return removed, errors
+
+
 class App:
     def __init__(self, cfg: dict) -> None:
         self.cfg = cfg
@@ -297,6 +392,7 @@ class App:
         self.related_identical = False
         self.collection_widgets = {}
         self.restore_scroll = None
+        self.pending_delete = []
 
     # ---------------------------------------------------------------- build
 
@@ -387,6 +483,10 @@ class App:
                         callback=self.on_filter_change,
                     )
                     dpg.add_group(tag="collection_rows")
+                    dpg.add_button(
+                        label="Usuń zaznaczone pliki",
+                        callback=lambda: self.request_delete(self.checked[self.mode]),
+                    )
                 with dpg.child_window(
                     tag="related",
                     width=570,
@@ -449,6 +549,36 @@ class App:
             height=460,
             pos=(340, 120),
         )
+        with dpg.window(
+            label="Potwierdź usunięcie",
+            tag="delete_confirm",
+            modal=True,
+            show=False,
+            width=700,
+            height=420,
+        ):
+            dpg.add_text("Pliki zostaną trwale usunięte z dysku.")
+            dpg.add_text("", tag="delete_keep", wrap=660)
+            with dpg.child_window(height=250):
+                dpg.add_text("", tag="delete_paths", wrap=660)
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="Usuń", callback=self.confirm_delete)
+                dpg.add_button(
+                    label="Anuluj", callback=lambda: dpg.hide_item("delete_confirm")
+                )
+        with dpg.window(
+            label="Wynik usuwania",
+            tag="delete_report",
+            modal=True,
+            show=False,
+            width=700,
+            height=420,
+        ):
+            with dpg.child_window(height=320):
+                dpg.add_text("", tag="delete_errors", wrap=660)
+            dpg.add_button(
+                label="Zamknij", callback=lambda: dpg.hide_item("delete_report")
+            )
         with dpg.table(parent="help", header_row=False, borders_innerH=False):
             dpg.add_table_column(width_fixed=True, init_width_or_weight=180)
             dpg.add_table_column()
@@ -650,7 +780,11 @@ class App:
         self.do_search()
 
     def on_escape(self, *_: object) -> None:
-        if dpg.is_item_shown("related"):
+        if dpg.is_item_shown("delete_confirm"):
+            dpg.hide_item("delete_confirm")
+        elif dpg.is_item_shown("delete_report"):
+            dpg.hide_item("delete_report")
+        elif dpg.is_item_shown("related"):
             self.close_related()
         elif dpg.is_item_shown("help"):
             dpg.hide_item("help")
@@ -675,6 +809,84 @@ class App:
     def relative_path(self, path: str) -> str:
         return os.path.relpath(path, self.image_dir)
 
+    def request_delete(self, paths, *, keep=None):
+        paths = set(paths)
+        rows = self.con.execute(indexed_files_sql(self.con)).fetchall()
+        self.pending_delete = [(h, p) for h, p in rows if p in paths and p != keep]
+        self.pending_delete = sorted(set(self.pending_delete), key=lambda row: row[1])
+        if not self.pending_delete:
+            dpg.set_value("status", "Nie zaznaczono plików do usunięcia.")
+            return
+        dpg.set_value(
+            "delete_keep", f"Zachowaj: {self.relative_path(keep)}" if keep else ""
+        )
+        dpg.set_value(
+            "delete_paths",
+            "\n".join(self.relative_path(p) for _, p in self.pending_delete),
+        )
+        dpg.show_item("delete_confirm")
+
+    def delete_rest(self, digest, keep):
+        rows = related_files(self.con, digest, identical=False)
+        paths, _ = current_result_paths([(h, p) for h, p, _, _ in rows])
+        self.request_delete(paths, keep=keep)
+
+    def file_menu(self, widget, digest, path):
+        with dpg.popup(widget, mousebutton=dpg.mvMouseButton_Right):
+            dpg.add_menu_item(
+                label="Usuń plik", callback=lambda: self.request_delete([path])
+            )
+            dpg.add_menu_item(
+                label="Usuń resztę z grupy",
+                callback=lambda: self.delete_rest(digest, path),
+            )
+
+    def confirm_delete(self, *_):
+        dpg.hide_item("delete_confirm")
+        preview, origin = self.preview_path, self.related_origin
+        removed, errors = delete_files(
+            self.con, self.pending_delete, self.cfg["phash_threshold"]
+        )
+        self.pending_delete = []
+        self.collection, self.collection_hidden = collection_files(
+            self.con, self.cfg["describe"]
+        )
+        available = {f.path for f in self.collection}
+        for checked in self.checked.values():
+            checked.intersection_update(available)
+        for mode, state in list(self.mode_state.items()):
+            state = list(state)
+            if state[1] not in available:
+                state[1] = None
+            if state[5] not in available:
+                state[5] = None
+            self.mode_state[mode] = tuple(state)
+        self.related_origin = None
+        self.clear_preview()
+        if self.mode == "Szukaj":
+            self.do_search()
+        else:
+            self.last_query = ""
+            self.render_collection()
+        if preview in available:
+            self.show(preview)
+            if origin in available:
+                self.open_related(identical=self.related_identical)
+                self.related_origin = origin
+        self.apply_layout()
+        message = f"Usunięto {len(removed)} plików; błędy: {len(errors)}."
+        dpg.set_value("status", message)
+        if errors:
+            dpg.set_value(
+                "delete_errors",
+                message
+                + "\n\n"
+                + "\n\n".join(
+                    f"{self.relative_path(p)}: {error}" for p, error in errors
+                ),
+            )
+            dpg.show_item("delete_report")
+
     def open_related(self, *, identical: bool) -> None:
         if self.preview_hash is None:
             return
@@ -688,6 +900,12 @@ class App:
             self.related_scroll = dpg.get_y_scroll(pane)
         dpg.delete_item("related", children_only=True)
         dpg.add_button(label="Wróć", parent="related", callback=self.close_related)
+        if self.mode == "Lista":
+            dpg.add_button(
+                label="Usuń zaznaczone pliki",
+                parent="related",
+                callback=lambda: self.request_delete(self.checked[self.mode]),
+            )
         title = "Identyczne kopie" if identical else "Grupa duplikatów"
         dpg.add_text(title, parent="related")
         dpg.add_text(self.relative_path(self.preview_path), parent="related", wrap=680)
@@ -713,13 +931,22 @@ class App:
             if primary:
                 markers.append("kopia główna")
             suffix = f" ({', '.join(markers)})" if markers else ""
-            dpg.add_selectable(
+            if self.mode == "Lista":
+                dpg.add_checkbox(
+                    parent="related",
+                    default_value=path in self.checked[self.mode],
+                    callback=self.on_check,
+                    user_data=path,
+                )
+            widget = dpg.add_selectable(
                 label=self.relative_path(path) + suffix,
                 default_value=path == self.preview_path,
                 parent="related",
                 callback=self.on_related_select,
                 user_data=path,
             )
+            if self.mode == "Lista":
+                self.file_menu(widget, digest, path)
         dpg.show_item("related")
         self.apply_layout()
 
@@ -795,10 +1022,11 @@ class App:
             callback=self.on_query_change,
             hint="opisz mem…" if self.mode == "Szukaj" else "filtruj nazwy i ścieżki…",
         )
-        if self.mode == "Lista" and self.collection is None:
-            self.collection, self.collection_hidden = collection_files(
-                self.con, self.cfg["describe"]
-            )
+        if self.mode == "Lista":
+            if self.collection is None:
+                self.collection, self.collection_hidden = collection_files(
+                    self.con, self.cfg["describe"]
+                )
             self.render_collection()
         if state[1]:
             self.show(state[1])
@@ -898,6 +1126,7 @@ class App:
                         span_columns=True,
                     )
                     self.collection_widgets[file.path] = widget
+                    self.file_menu(widget, file.digest, file.path)
                     dpg.add_text(str(Path(self.relative_path(file.path)).parent))
                     dpg.add_text(str(file.copies))
                     state = {
@@ -1047,7 +1276,7 @@ class App:
         )
         self.preview_path = path
         self.preview_hash = digest
-        dpg.set_value("preview_path", self.relative_path(path))
+        dpg.set_value("preview_path", f"{w} × {h} px · {self.relative_path(path)}")
         dpg.show_item("preview_path")
         dpg.show_item("file_actions")
         group = related_files(self.con, digest, identical=False)

@@ -8,7 +8,7 @@ phash_threshold = 8
 backend = "codex-cli"  # uruchamia `codex exec`
 model = "gpt-6-astra"  # przekazywany do --model
 prompt_version = "vcodex1-master"
-effort_level = "xhigh"  # przekazywany jako model_reasoning_effort
+effort_level = "low"  # przekazywany jako model_reasoning_effort
 
 [embed]
 base_url = "http://localhost:2138/v1"

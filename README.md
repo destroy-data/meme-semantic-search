@@ -80,7 +80,12 @@ skill discovery. Managed policy and additional environment/tool instructions
 can still apply. Session logging is enabled for auditing.
 With `-v`, the per-meme header also shows `[N tokens]` from Codex's completed
 turn: input plus output tokens, including cached input once. If usage is absent,
-the token count is omitted.
+the token count is omitted. Reported usage is stored in `descriptions.total_tokens`
+for all three backends (input plus output, counting cached input once); unknown
+usage is `NULL`. `descriptions.usage_json` preserves the backend's full usage
+object, including input/output, cache and reasoning counts when reported, without
+renaming or dropping fields. Existing databases gain both columns automatically
+on connection, with older descriptions left as `NULL`.
 
 Codex requires `additionalProperties: false`; the temporary schema adds it and
 omits unsupported `uniqueItems`, which is checked locally instead. The canonical
@@ -114,7 +119,7 @@ work happens. The first full run takes hours; killing it loses at most one image
 |---|---|
 | `index` | `--limit N`, `--retry-failed` |
 | `scan` | `--regroup-only`, `--prune-missing` |
-| `describe` | `--limit N`, `--retry-failed`, `--any-effort`, `--model M`, `--effort E`, `--path FILE...`, `-v` |
+| `describe` | `--limit N`, `--retry-failed`, `--any-effort`, `--undescribed-only`, `--model M`, `--effort E`, `--path FILE...`, `-v` |
 | `embed` | `--limit N`, `--model M` |
 | `search` | `QUERY...`, `-n/--top N`, `--show` |
 | `gui` | — |
@@ -122,6 +127,10 @@ work happens. The first full run takes hours; killing it loses at most one image
 All take `--config` (default `config.toml`). Every stage also runs standalone:
 `uv run describe.py --limit 10`. `--model` on `embed` picks *whose descriptions
 get embedded*, not the embedding model.
+
+`describe --undescribed-only` skips memes with any successful description,
+regardless of model, prompt or effort. Failed attempts under the selected config
+still require `--retry-failed`. This flag cannot be combined with `--path`.
 
 ## The pipeline
 
@@ -240,19 +249,22 @@ closes the list. Missing or replaced files are hidden with a count.
 Legacy databases can still show perceptual groups from `memes`; run scan to
 populate `meme_files` and discover all identical copies.
 
-The following scope extension is agreed but **not implemented yet**:
+Use checkboxes and **Usuń zaznaczone pliki** in Lista or its duplicate
+views to delete physical files. Search mode has no deletion controls.
+The right-click menu on a file in Lista offers **Usuń plik**
+and **Usuń resztę z grupy**. The latter keeps the clicked physical file and lists
+all other available group members, including identical copies, for confirmation.
+Deletion is permanent and requires confirmation. Immediately before deletion,
+the file's SHA-256 must match the database; replaced files and filesystem failures
+are reported and retain their records. Successful deletions update the database,
+visible results and groups. Moving, renaming and indexing remain deferred.
 
-1. Delete selected physical files from disk, primarily to
-   clean up duplicates. This is also available for ordinary search results.
-   Only selected files are removed; successful deletions update the database,
-   search results and groups. File deletion failures remain visible and retain
-   their database records.
-
-2. Moving, renaming and indexing from the GUI are deferred to a later stage.
-
-Planned deletion of a representative will select a new one from the remaining group using the
+Deletion of a representative selects a new one from the remaining group using the
 existing grouping rules, preserving surviving descriptions and embeddings.
-The new representative may still need CLI indexing before appearing in search.
+If no surviving member has a vector, deletion transfers the removed member's
+vector and FTS text to an available survivor, preserving group searchability
+without inference. This inherited index describes the similar removed image;
+description rows are not copied and existing survivor indexes are preserved.
 
 Groups refer to perceptually similar images and can include false positives.
 Identical copies share one metadata row but keep every scanned path in
@@ -261,7 +273,7 @@ and search; scanning switches to the first matching copy ordered by path only
 when the primary disappears or changes content. `describe --path` accepts any
 recorded copy. Re-scan an existing collection to discover copies whose paths
 were previously overwritten. Pruning removes shared metadata only when no copy
-remains. GUI groups include identical copies and count physical files. Planned
+remains. GUI groups include identical copies and count physical files. GUI
 deletion of one copy preserves shared work while another remains. Indexing
 remains in the CLI; tagging, image editing, folder
 watching and a web UI are outside this extension.

@@ -259,7 +259,10 @@ means retrying a failed row overwrites the old failure cleanly.
   it, both successes and failures count as "done"), `--limit N`, and
   `--model` / `--effort` overrides so an alternate variant can be tried without
   editing the config. `--any-effort` counts a row under the same
-  `(model, prompt)` at any effort as done. `--path FILE…` is the prompt-iteration
+  `(model, prompt)` at any effort as done. `--undescribed-only` skips memes with
+  any successful description, regardless of model, prompt or effort; failures
+  under the active config still require `--retry-failed`. It cannot be combined
+  with `--path`. `--path FILE…` is the prompt-iteration
   tool: it bypasses the queue, the duplicate filter and skip logic, and replaces
   an existing row for the same config (announcing it). `-v` prints each
   description as it lands.
@@ -413,20 +416,30 @@ the originating preview in either mode. Esc closes the list. Hide missing or rep
 and report their count. Legacy databases without `meme_files` use known paths
 from `memes` until the next scan.
 
-**Scope extension agreed; not implemented yet:**
+**Implemented deletion; moving, renaming and indexing remain deferred:**
 
 - Moving, renaming and indexing from the GUI are deferred.
 - Allow selecting one or multiple memes and deleting their files from disk,
-  from both search and duplicate views. The primary use is duplicate cleanup,
+  from Lista and its duplicate views. Search mode has no deletion controls.
+  The primary use is duplicate cleanup,
   but deletion is not restricted to non-representatives. Delete only explicitly
   selected files, never an entire group implicitly.
+- File context menus include "Usuń resztę z grupy": keep the clicked physical
+  file and confirm the explicit list of other available group paths, including
+  identical copies. All deletion actions require confirmation and recheck
+  SHA-256 against the database immediately before unlinking each file.
 - Reflect successful deletions in `memes`, `descriptions`, `memes_fts` and
   `memes_vec`, and refresh visible results and groups. A filesystem failure
   must be reported for that file and must not discard its database records.
   Regroup remaining rows after deletion, using the existing representative
-  selection rules; preserve all work belonging to surviving memes. A newly
-  promoted representative may need describe/embed before it becomes searchable;
-  deletion does not itself run model inference.
+  selection rules; preserve all work belonging to surviving memes. If the last
+  copy of an indexed member is deleted and the remaining group has no vector,
+  transfer its vector and FTS text to an available surviving member before
+  removing its database row. Preserve group membership across the entire batch.
+  This retains group searchability without inference; the inherited index is
+  based on the deleted similar image, not a new description of the survivor.
+  Do not overwrite a survivor's existing index or copy description rows between
+  different content hashes. Deletion does not itself run model inference.
 
 Here, a duplicate group means the existing perceptual-similarity annotation;
 it may contain false positives, so users choose which files to remove.
@@ -481,6 +494,10 @@ genuinely needed, propose it first.
 
 ## Conventions
 
+- Before every destructive operation or file move, always recompute the file's
+  SHA-256 and verify that it matches the hash recorded in the database. On a
+  mismatch or an unreadable file, abort the operation for that file, report the
+  error, and preserve its database records.
 - Config in a single TOML file (paths, Ollama base_url, model names, thresholds).
 - Small, boring, readable code. Standard library where possible.
 - Print progress with counts (`described 142/3801, 3 failed`) — runs are long.

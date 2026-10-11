@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS descriptions (
     prompt_version   TEXT    NOT NULL,           -- matches prompts/<name>.txt
     model            TEXT    NOT NULL,           -- VLM model that produced this row
     effort_level     TEXT,                       -- reasoning_effort passed to the API; NULL = not sent
+    total_tokens     INTEGER,                    -- reported input + output usage; NULL = unknown
+    usage_json       TEXT,                       -- backend's full usage breakdown; NULL = unknown
     status           TEXT    NOT NULL
         CHECK (status IN ('described', 'failed_describe')),
     error            TEXT,                       -- error message when status='failed_describe'

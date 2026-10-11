@@ -182,7 +182,31 @@ def image_data_url(path: Path, *, preserve_size: bool = False) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-def request_description(cfg: dict, prompt: str, images: list[str]) -> str:
+def total_tokens(usage: dict | None) -> int | None:
+    """Read reported usage, keeping missing/invalid counts distinct from zero."""
+    if not isinstance(usage, dict):
+        return None
+    total = usage.get("total_tokens")
+    if type(total) is int and total >= 0:
+        return total
+    if "prompt_tokens" in usage or "completion_tokens" in usage:
+        counts = [usage.get("prompt_tokens"), usage.get("completion_tokens")]
+    else:
+        counts = [usage.get("input_tokens"), usage.get("output_tokens")]
+        # Claude reports cache reads/creation separately from input_tokens;
+        # Codex includes cached input in input_tokens already.
+        counts += [
+            usage.get("cache_read_input_tokens", 0),
+            usage.get("cache_creation_input_tokens", 0),
+        ]
+    if all(type(count) is int and count >= 0 for count in counts):
+        return sum(counts)
+    return None
+
+
+def request_description(
+    cfg: dict, prompt: str, images: list[str]
+) -> tuple[str, dict | None]:
     payload = {
         "model": cfg["model"],
         "temperature": 0,
@@ -218,7 +242,7 @@ def request_description(cfg: dict, prompt: str, images: list[str]) -> str:
     )
     with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
         body = json.load(resp)
-    return body["choices"][0]["message"]["content"]
+    return body["choices"][0]["message"]["content"], body.get("usage")
 
 
 def run_description_cli(
@@ -275,7 +299,7 @@ def run_description_cli(
 
 def request_description_cli(
     cfg: dict, prompt: str, images: list[DescriptionImage], *, verbose: bool = False
-) -> str:
+) -> tuple[str, dict | None]:
     """Describe through the local Claude Code CLI instead of an HTTP endpoint.
 
     Billed against the Claude Code subscription, so no api_key/base_url is used.
@@ -346,7 +370,7 @@ def request_description_cli(
     data = envelope.get("structured_output")
     if not data:
         raise ValueError(f"no structured output: {envelope.get('result', '')[:200]}")
-    return json.dumps(data, ensure_ascii=False)
+    return json.dumps(data, ensure_ascii=False), envelope.get("usage")
 
 
 class CodexCLIError(RuntimeError):
@@ -355,7 +379,7 @@ class CodexCLIError(RuntimeError):
 
 def request_description_codex_cli(
     cfg: dict, prompt: str, images: list[DescriptionImage], *, verbose: bool = False
-) -> tuple[str, int | None]:
+) -> tuple[str, dict | None]:
     """Use the versioned prompt as Codex's replacement model instructions."""
     with tempfile.TemporaryDirectory(prefix="meme-codex-") as tmp:
         workdir = Path(tmp)
@@ -473,13 +497,7 @@ def request_description_codex_cli(
                 enum = spec["items"].get("enum")
                 if enum and any(v not in enum for v in value):
                     raise ValueError(f"{key} contains an unknown value")
-        usage = completed[-1].get("usage")
-        tokens = None
-        if isinstance(usage, dict):
-            counts = [usage.get("input_tokens"), usage.get("output_tokens")]
-            if all(type(count) is int and count >= 0 for count in counts):
-                tokens = sum(counts)
-        return raw, tokens
+        return raw, completed[-1].get("usage")
 
 
 KEY_WIDTH = 13  # "transcription", the longest field name
@@ -506,7 +524,11 @@ def print_description(data: dict) -> None:
         for paragraph in str(value).splitlines():
             # An empty paragraph is a blank line between meme panels; keep it.
             lines.extend(textwrap.wrap(paragraph, body_width) or [""])
-        print(f"  {key:<{KEY_WIDTH}} {lines[0] if lines else ''}".rstrip())
+        label = key
+        if key == "the_clue" and sys.stdout.isatty():
+            label = f"\033[1m{key}\033[22m"
+        padding = " " * max(0, KEY_WIDTH - len(key))
+        print(f"  {label}{padding} {lines[0] if lines else ''}".rstrip())
         for line in lines[1:]:
             print(f"{indent}{line}".rstrip())
 
@@ -541,9 +563,12 @@ def describe_memes(
     retry_failed: bool = False,
     limit: int = 0,
     any_effort: bool = False,
+    undescribed_only: bool = False,
     verbose: bool = False,
     paths: list[str] | None = None,
 ) -> None:
+    if undescribed_only and paths:
+        raise SystemExit("--undescribed-only cannot be combined with --path")
     version = cfg["prompt_version"]
     model = cfg["model"]
     backend = cfg.get("backend", "openai")
@@ -563,6 +588,12 @@ def describe_memes(
     # regardless of effort_level, so effort experiments don't trigger re-runs.
     effort_filter = "" if any_effort else "AND d.effort_level IS ?"
     params = [model, version] if any_effort else [model, version, effort]
+    undescribed_filter = (
+        "AND NOT EXISTS (SELECT 1 FROM descriptions prior "
+        "WHERE prior.hash = m.hash AND prior.status = 'described')"
+        if undescribed_only
+        else ""
+    )
     if paths:
         # --path overrides the queue entirely, skip logic included: re-describing
         # one meme under an unchanged config is the whole point (prompt
@@ -585,6 +616,7 @@ def describe_memes(
             f"""
             SELECT m.hash, m.path FROM memes m
             WHERE m.perceptual_duplicate_of IS NULL
+              {undescribed_filter}
               AND NOT EXISTS (
                   SELECT 1 FROM descriptions d
                   WHERE d.hash = m.hash
@@ -649,6 +681,7 @@ def describe_rows(
         while True:
             try:
                 tokens = None
+                usage_json = None
                 with tempfile.TemporaryDirectory(prefix="meme-images-") as tmp:
                     images = prepare_description_images(Path(path), Path(tmp))
                     image_prompt = description_image_prompt(prompt, images)
@@ -658,12 +691,12 @@ def describe_rows(
                         )
                     if backend == "claude-code-cli":
                         started = time.monotonic()
-                        raw = request_description_cli(
+                        raw, usage = request_description_cli(
                             cfg, image_prompt, images, verbose=verbose
                         )
                     elif backend == "codex-cli":
                         started = time.monotonic()
-                        raw, tokens = request_description_codex_cli(
+                        raw, usage = request_description_codex_cli(
                             cfg, prompt, images, verbose=verbose
                         )
                     else:
@@ -674,7 +707,10 @@ def describe_rows(
                             for image in images
                         ]
                         started = time.monotonic()
-                        raw = request_description(cfg, image_prompt, urls)
+                        raw, usage = request_description(cfg, image_prompt, urls)
+                if isinstance(usage, dict):
+                    usage_json = json.dumps(usage, ensure_ascii=False)
+                    tokens = total_tokens(usage)
                 elapsed = time.monotonic() - started
                 data = json.loads(raw)
                 missing = [k for k in SCHEMA["required"] if k not in data]
@@ -682,9 +718,10 @@ def describe_rows(
                     raise ValueError(f"VLM output missing keys: {missing}")
                 con.execute(
                     "INSERT OR REPLACE INTO descriptions "
-                    "(hash, description_json, prompt_version, model, effort_level, status, error) "
-                    "VALUES (?, ?, ?, ?, ?, 'described', NULL)",
-                    (digest, raw, version, model, effort),
+                    "(hash, description_json, prompt_version, model, effort_level, "
+                    "total_tokens, usage_json, status, error) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'described', NULL)",
+                    (digest, raw, version, model, effort, tokens, usage_json),
                 )
                 done += 1
                 if verbose:
@@ -724,9 +761,10 @@ def describe_rows(
             except Exception as e:  # noqa: BLE001
                 con.execute(
                     "INSERT OR REPLACE INTO descriptions "
-                    "(hash, description_json, prompt_version, model, effort_level, status, error) "
-                    "VALUES (?, NULL, ?, ?, ?, 'failed_describe', ?)",
-                    (digest, version, model, effort, str(e)),
+                    "(hash, description_json, prompt_version, model, effort_level, "
+                    "total_tokens, usage_json, status, error) "
+                    "VALUES (?, NULL, ?, ?, ?, ?, ?, 'failed_describe', ?)",
+                    (digest, version, model, effort, tokens, usage_json, str(e)),
                 )
                 failed += 1
                 print(
@@ -750,12 +788,19 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="also re-pick rows with status=failed_describe",
     )
     parser.add_argument("--limit", type=int, default=0, help="describe at most N memes")
-    parser.add_argument(
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument(
         "--path",
         nargs="+",
         metavar="FILE",
         help="describe these files only; ignores the queue, the duplicate filter "
         "and skip logic, so an existing row for the same config is replaced",
+    )
+    selection.add_argument(
+        "--undescribed-only",
+        action="store_true",
+        help="only pick memes without any successful description, regardless of "
+        "model, prompt or effort; use --retry-failed to retry failures",
     )
     parser.add_argument(
         "--any-effort",
@@ -785,6 +830,7 @@ def run(args: argparse.Namespace, cfg: dict) -> None:
         retry_failed=args.retry_failed,
         limit=args.limit,
         any_effort=args.any_effort,
+        undescribed_only=args.undescribed_only,
         verbose=args.verbose,
         paths=args.path,
     )
