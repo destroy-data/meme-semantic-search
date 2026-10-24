@@ -379,10 +379,19 @@ CLI: takes a free-text query, returns top-N file paths.
 ### Stage 5 — GUI (`gui`)
 
 The GUI supports finding, previewing and copying memes, inspecting description
-variants, browsing the collection, and reviewing duplicates. File mutations
-and indexing from the GUI remain deferred.
+variants, browsing the collection, reviewing duplicates, deleting files and
+embedding existing descriptions. Scanning and describing from the GUI remain deferred.
 
 **Implemented in the GUI:**
+
+In Lista, **Embeduj opisane** runs the existing embed stage in a background
+thread with its own SQLite connection and progress sent to the render thread.
+It fills missing vector/FTS indexes across the collection regardless of selection,
+filters, prompt or model, using each representative's newest successful description
+across all configurations, without preferring the active model or effort. CLI
+embedding keeps its active-prompt selection and model/effort fallback rules.
+Existing vectors and non-representatives are skipped. Completion refreshes the
+collection and search; errors can be retried. Deletion is blocked during the run.
 
 - A `FTS / Embeddingi` slider sits between the shared query field and the
   `Szukaj / Lista` switch. Default 50/50 preserves the existing ranking; left
@@ -416,9 +425,9 @@ the originating preview in either mode. Esc closes the list. Hide missing or rep
 and report their count. Legacy databases without `meme_files` use known paths
 from `memes` until the next scan.
 
-**Implemented deletion; moving, renaming and indexing remain deferred:**
+**Implemented deletion; moving, renaming, scanning and describing remain deferred:**
 
-- Moving, renaming and indexing from the GUI are deferred.
+- Moving, renaming, scanning and describing from the GUI are deferred.
 - Allow selecting one or multiple memes and deleting their files from disk,
   from Lista and its duplicate views. Search mode has no deletion controls.
   The primary use is duplicate cleanup,
@@ -450,7 +459,7 @@ deletion removes only that path; retain shared metadata and indexes while anothe
 copy survives. The primary path and the perceptual group representative are
 separate choices. Files not yet scanned cannot be listed.
 
-Indexing remains a CLI operation. This extension does not add tagging, image
+Full indexing remains a CLI operation. This extension does not add tagging, image
 editing, folder watching or a web UI.
 
 ## Build order (milestones — do not skip ahead)

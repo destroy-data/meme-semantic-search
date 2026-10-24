@@ -102,6 +102,16 @@ uv run memes.py search --config config.test.toml "opis albo cytat" -n 10
 uv run memes.py gui --config config.test.toml
 ```
 
+1. [ ] W „Liście” kliknij „Embeduj opisane”. Przycisk działa na całej kolekcji,
+   niezależnie od promptu, modelu, filtra i checkboxów. Pomija istniejące
+   wektory i duplikaty niebędące reprezentantami. Dla każdego mema wybiera
+   najnowszy udany opis ze wszystkich konfiguracji. Po ukończeniu tabela pokazuje nowe „w indeksie”,
+   a wyszukiwanie uwzględnia nowe memy bez restartu.
+2. [ ] Podczas embedowania widać postęp i liczbę błędów; można przeglądać
+   kolekcję i przełączać tryby. Kolejny bieg i usuwanie są zablokowane.
+   Błąd endpointu nie zatrzymuje pozostałych memów. Ponowne kliknięcie podejmuje
+   tylko brakujące wektory; pusta kolejka i błąd uruchomienia mają jasny komunikat.
+
 - [ ] Na górze, po prawej od pola wyszukiwania, jest przełącznik „Szukaj / Lista”.
   „Lista” pokazuje tabelę po lewej i wspólny podgląd po prawej. Wpisany tekst
   filtruje nazwy i ścieżki bez wywoływania modelu. Powrót do każdego trybu

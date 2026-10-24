@@ -9,12 +9,16 @@ import sqlite3
 import subprocess
 import time
 from collections import Counter
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty, SimpleQueue
+from threading import Thread
 
 import dearpygui.dearpygui as dpg
 
 import common
+import embed as embed_stage
 import scan as scan_stage
 import search as search_stage
 
@@ -393,6 +397,9 @@ class App:
         self.collection_widgets = {}
         self.restore_scroll = None
         self.pending_delete = []
+        self.embedding_running = False
+        self.embedding_events = SimpleQueue()
+        self.embedding_counts = (0, 0, 0)
 
     # ---------------------------------------------------------------- build
 
@@ -482,6 +489,18 @@ class App:
                         width=-1,
                         callback=self.on_filter_change,
                     )
+                    dpg.add_button(
+                        label="Embeduj opisane",
+                        tag="embed_described",
+                        callback=self.start_embedding,
+                    )
+                    with dpg.tooltip("embed_described"):
+                        dpg.add_text(
+                            "Uzupełnia brakujące embeddingi w całej kolekcji,\n"
+                            "niezależnie od promptu, modelu, filtrów i zaznaczenia.\n"
+                            "Dla każdego reprezentanta wybiera najnowszy udany opis."
+                        )
+                    dpg.add_text("", tag="embed_progress", wrap=530)
                     dpg.add_group(tag="collection_rows")
                     dpg.add_button(
                         label="Usuń zaznaczone pliki",
@@ -810,6 +829,9 @@ class App:
         return os.path.relpath(path, self.image_dir)
 
     def request_delete(self, paths, *, keep=None):
+        if self.embedding_running:
+            dpg.set_value("status", "Usuwanie będzie dostępne po embedowaniu.")
+            return
         paths = set(paths)
         rows = self.con.execute(indexed_files_sql(self.con)).fetchall()
         self.pending_delete = [(h, p) for h, p in rows if p in paths and p != keep]
@@ -842,6 +864,9 @@ class App:
             )
 
     def confirm_delete(self, *_):
+        if self.embedding_running:
+            dpg.set_value("status", "Usuwanie będzie dostępne po embedowaniu.")
+            return
         dpg.hide_item("delete_confirm")
         preview, origin = self.preview_path, self.related_origin
         removed, errors = delete_files(
@@ -1056,6 +1081,72 @@ class App:
     def on_filter_change(self, _sender, value):
         self.collection_filter = value
         self.render_collection()
+
+    def start_embedding(self, *_):
+        if self.embedding_running or self.mode != "Lista":
+            return
+        self.embedding_running = True
+        self.embedding_counts = (0, 0, 0)
+        dpg.configure_item("embed_described", enabled=False)
+        dpg.set_value("embed_progress", "Wczytywanie kolejki embeddingów…")
+        dpg.hide_item("delete_confirm")
+        self.pending_delete = []
+        Thread(target=self.embed_worker, daemon=True).start()
+
+    def embed_worker(self):
+        # Own connection; only the render thread may touch DPG or self.con.
+        error = None
+        try:
+            with closing(common.connect(self.cfg["db_path"])) as con:
+                embed_stage.embed_descriptions(
+                    con,
+                    self.cfg["describe"],
+                    self.cfg["embed"],
+                    all_descriptions=True,
+                    progress=lambda done, failed, total: self.embedding_events.put(
+                        ("progress", (done, failed, total))
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc)
+        finally:
+            self.embedding_events.put(("finished", error))
+
+    def poll_embedding(self):
+        while True:
+            try:
+                kind, data = self.embedding_events.get_nowait()
+            except Empty:
+                return
+            if kind == "progress":
+                self.embedding_counts = data
+                done, failed, total = data
+                dpg.set_value(
+                    "embed_progress",
+                    f"Embeddingi: {done + failed}/{total}; gotowe: {done}, błędy: {failed}",
+                )
+                continue
+            self.embedding_running = False
+            dpg.configure_item("embed_described", enabled=True)
+            self.collection, self.collection_hidden = collection_files(
+                self.con, self.cfg["describe"]
+            )
+            if self.mode == "Lista":
+                scroll = dpg.get_y_scroll("list_content")
+                self.render_collection()
+                self.restore_scroll = {"list_content": scroll}
+            # Refresh search too, including when restored after a mode switch.
+            self.last_query = ""
+            if self.mode == "Szukaj":
+                self.on_query_change()
+            done, failed, total = self.embedding_counts
+            if data is not None:
+                message = f"Błąd embedowania: {data}"
+            elif total:
+                message = f"Embedowanie zakończone: {done}/{total}; błędy: {failed}."
+            else:
+                message = "Wszystkie opisane memy mają już embeddingi."
+            dpg.set_value("embed_progress", message)
 
     def on_check(self, _sender, value, path):
         selected = self.checked[self.mode]
@@ -1361,6 +1452,7 @@ class App:
         self.build()
         while dpg.is_dearpygui_running():
             dpg.run_callbacks(dpg.get_callback_queue())
+            self.poll_embedding()
             self.maybe_search()
             self.handle_resize()
             dpg.render_dearpygui_frame()
