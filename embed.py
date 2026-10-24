@@ -5,6 +5,7 @@ import json
 import sqlite3
 import sys
 import time
+from collections.abc import Callable
 
 import sqlite_vec
 
@@ -30,11 +31,19 @@ def embedding_text(desc: dict) -> str:
 
 
 def embed_descriptions(
-    con: sqlite3.Connection, describe_cfg: dict, embed_cfg: dict, *, limit: int = 0
+    con: sqlite3.Connection,
+    describe_cfg: dict,
+    embed_cfg: dict,
+    *,
+    limit: int = 0,
+    all_descriptions: bool = False,
+    progress: Callable[[int, int, int], None] | None = None,
 ) -> None:
     # Per meme, prefer the description matching [describe] exactly; fall back to
     # the same model with any effort, then to any model. Prompt_version stays
     # strict — a prompt swap is an intentional experiment, not a fallback axis.
+    # The GUI opts into all descriptions: newest success across every config,
+    # with no preference for the active model, prompt or effort.
     rows = con.execute(
         """
         WITH ranked AS (
@@ -45,6 +54,7 @@ def embed_descriptions(
                     PARTITION BY m.hash
                     ORDER BY
                         CASE
+                            WHEN :all_descriptions THEN 1
                             WHEN d.model = :model
                              AND IFNULL(d.effort_level, '') = IFNULL(:effort, '')
                                 THEN 1
@@ -57,12 +67,13 @@ def embed_descriptions(
             JOIN descriptions d ON d.hash = m.hash
             WHERE m.perceptual_duplicate_of IS NULL
               AND d.status = 'described'
-              AND d.prompt_version = :prompt
+              AND (:all_descriptions OR d.prompt_version = :prompt)
         )
         SELECT hash, description_json FROM ranked WHERE rn = 1
         ORDER BY hash
         """,
         {
+            "all_descriptions": all_descriptions,
             "model": describe_cfg["model"],
             "prompt": describe_cfg["prompt_version"],
             "effort": describe_cfg.get("effort_level"),
@@ -74,6 +85,8 @@ def embed_descriptions(
         rows = rows[:limit]
 
     done = failed = 0
+    if progress:
+        progress(done, failed, len(rows))
     for digest, raw in rows:
         try:
             desc = json.loads(raw)
@@ -107,6 +120,8 @@ def embed_descriptions(
         print(
             f"{time.strftime('%H:%M:%S')} embedded {done}/{len(rows)}, {failed} failed"
         )
+        if progress:
+            progress(done, failed, len(rows))
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:

@@ -234,6 +234,14 @@ Group sizes count available physical files before the path filter is applied.
 Collection data is loaded on first entering Lista; restart the GUI after a CLI
 scan or indexing run to reload it.
 
+In **Lista**, **Embeduj opisane** fills missing vector and FTS indexes across the
+whole collection, regardless of prompt, model, filters or checked files. For each
+representative, it uses the newest successful description across all prompts,
+models and effort levels, without preferring the active configuration. Existing vectors
+are skipped. Embedding runs in the background with progress and failure counts;
+the table and search refresh after completion. Deletion is temporarily blocked
+while it runs. Failed items can be retried with the same button.
+
 The current GUI searches as you type, previews selected images, lets you inspect
 description variants, and supports keyboard navigation, copying an image or its
 path, and opening it in an external viewer.
@@ -257,7 +265,8 @@ all other available group members, including identical copies, for confirmation.
 Deletion is permanent and requires confirmation. Immediately before deletion,
 the file's SHA-256 must match the database; replaced files and filesystem failures
 are reported and retain their records. Successful deletions update the database,
-visible results and groups. Moving, renaming and indexing remain deferred.
+visible results and groups. Moving, renaming, scanning and describing from the
+GUI remain deferred.
 
 Deletion of a representative selects a new one from the remaining group using the
 existing grouping rules, preserving surviving descriptions and embeddings.
