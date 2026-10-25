@@ -39,13 +39,24 @@ of an HTTP call, billed against a Claude Code subscription; when its usage limit
 runs out, `describe` waits and retries the same image rather than marking it
 failed.
 
+Claude receives PNG images directly as base64 blocks on stdin, using
+`--input-format stream-json --output-format stream-json --verbose` in a temporary
+working directory. `--tools ""`, `--permission-mode dontAsk`, `--safe-mode` and
+strict MCP settings remove host tools and customizations. The only model tool
+is `StructuredOutput`, bound by `--json-schema`; it cannot read files, run shell
+commands or access the web. The final JSONL `result` supplies `structured_output`
+and usage as before. CLI 2.1.294 was checked against a local fake endpoint:
+both images arrived, and `StructuredOutput` was the only tool in the request.
+Python preserves source resolution on this path; Claude CLI may normalize
+images itself before sending them. Existing descriptions are still skipped.
+
 Animated GIF/WebP/APNG files share one frame-selection path across all describe
 backends. Install `ffmpeg` on PATH. Pillow decodes frames and their durations;
 FFmpeg detects cuts with `scene > 0.15`. Each shot contributes its middle frame;
 without cuts, the middle and last frames are sent. Repeated selections of the
 same frame are collapsed. Selected PNGs retain native resolution and are sent
-in chronological order with timestamps (HTTP image URLs, Claude file paths,
-Codex image attachments). Temporary files are removed after the request.
+in chronological order with timestamps (HTTP image URLs, Claude inline images,
+Codex/OpenCode image attachments). Temporary files are removed after the request.
 No model is asked to extract animation frames. Extraction errors become
 per-image failures; existing descriptions are still skipped. Use a new prompt
 version when comparing the new inputs with older first-frame descriptions.
@@ -75,13 +86,19 @@ replacing Codex's built-in main instructions. Stdin carries only the request to
 describe the meme and, for animations, the frame order and timestamps.
 The output schema and final-response file are separate temporary files. Runs use
 a temporary working directory, read-only sandbox, no user config/rules or
-AGENTS.md, and disable shell, web search, hooks, apps, remote plugins and host
-skill discovery. Managed policy and additional environment/tool instructions
-can still apply. Session logging is enabled for auditing.
+AGENTS.md, and disable shell, web search, hooks, apps, plugins, host skill
+discovery, agents, goals, browser/computer use, image generation, local-image
+reading and question/plan tools. Images are attached by the CLI itself; the
+model has no tools for accessing files or running commands. CLI 0.164.0 was
+checked against a local fake endpoint: the request contained `tools: []` and
+the attached images, and the structured description was returned successfully.
+Managed policy and additional environment/tool instructions can still apply.
+Session logging is enabled for auditing; these flags restrict the model's
+tools, not the CLI process's own authentication, logging or network requests.
 With `-v`, the per-meme header also shows `[N tokens]` from Codex's completed
 turn: input plus output tokens, including cached input once. If usage is absent,
 the token count is omitted. Reported usage is stored in `descriptions.total_tokens`
-for all three backends (input plus output, counting cached input once); unknown
+for all backends (input plus output, counting cached input once); unknown
 usage is `NULL`. `descriptions.usage_json` preserves the backend's full usage
 object, including input/output, cache and reasoning counts when reported, without
 renaming or dropping fields. Existing databases gain both columns automatically
@@ -91,17 +108,101 @@ Codex requires `additionalProperties: false`; the temporary schema adds it and
 omits unsupported `uniqueItems`, which is checked locally instead. The canonical
 schema and prompt version are unchanged. Raw final JSON is stored verbatim.
 
-A Codex process failure, timeout or missing completed response stops the run
+A Codex process failure or missing completed response stops the run
 **without writing a description row**. Re-run after resolving the error; no
 `--retry-failed` is needed for that image. Unlike Claude, Codex quota failures
 are not automatically slept/retried: JSONL errors do not provide a verified
-stable quota discriminator here. Invalid completed descriptions and unreadable
-images still become `failed_describe`. Both CLIs share timeout/Ctrl+C handling.
+stable quota discriminator here. Timeouts, invalid completed descriptions and
+unreadable images become `failed_describe` and the queue continues; use
+`--retry-failed` to retry them. Both CLIs share timeout/Ctrl+C handling.
 The backend is not part of the existing DB uniqueness key; equal
 `(model, prompt_version, effort_level)` tuples still share one row.
 
 CLI protocol reference: [OpenAI non-interactive mode](https://developers.openai.com/codex/noninteractive).
 Instructions setting: [OpenAI configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+### DeepSeek through a Codex profile
+
+`config.deepseek.toml` sets `codex_profile = "~/.codex/deepseek.config.toml"`.
+`common.load_config` imports only the model/effort defaults and selected
+provider's inert connection settings. The provider definition may come from
+that file or its sibling `config.toml`. Explicit `[describe]` values and CLI
+`--model` / `--effort` override profile defaults; embed sees the same resolved
+model/effort. Permissions, instructions, hooks, plugins and tools from those
+files are not imported. Command-backed provider helpers are rejected.
+Literal bearer tokens and HTTP-header values are passed through child-process
+environment variables, never CLI arguments. CLI user config stays disabled.
+
+```sh
+uv run memes.py describe --config config.deepseek.toml --limit 1 -v
+uv run memes.py describe --config config.deepseek.toml --limit 1 --effort low -v
+```
+
+Verified with the configured `deepseek/deepseek-v4.1-flash` OpenRouter provider:
+one real image was described and committed using profile effort `high`.
+A local wire test with the actual CLI also verified model/effort, authentication,
+PNG attachment, JSON schema and `tools: []`.
+
+`codex.deepseek-models.json` supplies model metadata for interactive Codex's
+effort picker. It advertises OpenRouter's `none`, `low`, `high`, `max` options
+and preserves the installed CLI's default instructions for this model.
+Point `model_catalog_json` in the native DeepSeek profile at its absolute path
+and restart `codex --profile deepseek` to use it. The describe adapter does not
+import that catalog: it retains its explicit meme instructions and restrictions.
+The catalog was checked against Codex 0.164.0; revalidate after CLI updates.
+
+### Describe through OpenCode CLI
+
+Use `config.opencode.toml` with `backend = "opencode-cli"` and a vision-capable
+`model = "provider/model"` available through your OpenCode login. Optional
+`effort_level` selects an OpenCode `#variant`; omit it when unsupported. Do not
+set both `effort_level` and a variant in `model`. `base_url` and `api_key` are
+unused. Requires OpenCode V2 (checked against 2.1.3).
+
+```sh
+uv run memes.py describe --config config.opencode.toml --limit 1 -v
+```
+
+Each call uses `opencode run --standalone --format json` with a dedicated agent,
+temporary `cwd`/`PWD`, `OPENCODE_CONFIG_DIR` and `XDG_CONFIG_HOME`. Inherited
+`OPENCODE_CONFIG` and CLI inline settings are cleared; the adapter does not use
+`~/.config/opencode`. Source images are prepared
+as PNG attachments, just as for Codex. All model actions are denied by agent
+permissions and a `tool.use` policy. MCP, skills, external plugins and project
+configuration are disabled. Only built-in agent/provider/image/policy/catalog modules
+and provider authentication/routing remain enabled. The versioned prompt is the
+agent's system prompt; the request includes the canonical description schema.
+Returned JSON is validated locally, including tags, enums and extra fields.
+
+OpenCode 2.1.3 was checked with a local fake provider: `tools: []`, both selected
+images, correct JSON and no source paths in the model request. The CLI still
+reads its own authentication, attaches the chosen images and writes session
+data. These model restrictions are not an OS sandbox for the CLI process.
+Machine-managed settings or policy may still apply. Global custom provider
+definitions are not loaded; this adapter uses OpenCode's built-in provider
+catalog and saved credentials.
+
+Process errors, quota/auth errors, unexpected tool calls and missing output
+stop the run without a row, so rerunning resumes. Timeouts, invalid descriptions
+and unreadable images are per-image failures retried with `--retry-failed`.
+There is no automatic quota wait for OpenCode. Raw `step_finish.tokens` are
+stored as usage when present; only an explicit native `total` is counted.
+OpenCode's text-only catch-up output has no usage, so it remains `NULL`.
+
+The free `opencode/*-free` gateway can reject agents with disabled tools, even
+when the same model works in normal OpenCode. A `provider.free-limit` error
+does not by itself prove exhausted quota. See the upstream reports
+[shell/read denial](https://github.com/anomalyco/opencode/issues/51241) and
+[restricted toolsets](https://github.com/anomalyco/opencode/issues/54744).
+Live checks on 2.1.3 reproduced the rejection with this adapter, a built-in
+`build` agent and native agent/identity modules, all with tools disabled.
+The adapter keeps its restrictions and stops without marking the meme as done.
+Local fake-provider tests verify transport and isolation; they do not establish
+eligibility for the remote free service.
+
+References: [OpenCode CLI](https://opencode.ai/v2/docs/cli/commands/),
+[permissions](https://opencode.ai/v2/docs/permissions/),
+[policies](https://opencode.ai/v2/docs/policies/).
 
 ## Usage
 

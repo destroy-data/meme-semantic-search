@@ -16,7 +16,59 @@ EMBEDDING_DIM = 1024
 
 def load_config(path: str) -> dict:
     with open(path, "rb") as f:
-        return tomllib.load(f)
+        cfg = tomllib.load(f)
+    describe = cfg.get("describe", {})
+    if describe.get("backend") == "codex-cli" and describe.get("codex_profile"):
+        load_codex_profile(describe)
+    return cfg
+
+
+def load_codex_profile(cfg: dict) -> None:
+    """Import model defaults and one provider, never user permissions/tools."""
+    profile_path = Path(cfg["codex_profile"]).expanduser()
+    with profile_path.open("rb") as f:
+        profile = tomllib.load(f)
+    base_path = profile_path.with_name("config.toml")
+    base = {}
+    if base_path != profile_path and base_path.is_file():
+        with base_path.open("rb") as f:
+            base = tomllib.load(f)
+    for source, target in (
+        ("model", "model"),
+        ("model_reasoning_effort", "effort_level"),
+    ):
+        value = profile.get(source, base.get(source))
+        if value is not None:
+            cfg.setdefault(target, value)
+    provider_id = profile.get("model_provider", base.get("model_provider", "openai"))
+    provider = {
+        **base.get("model_providers", {}).get(provider_id, {}),
+        **profile.get("model_providers", {}).get(provider_id, {}),
+    }
+    if not provider and provider_id != "openai":
+        raise ValueError(f"Codex provider definition not found: {provider_id}")
+    # Provider helpers can run host commands. Only import inert connection
+    # settings; all other Codex config remains ignored by the describe adapter.
+    allowed = {
+        "name",
+        "base_url",
+        "wire_api",
+        "env_key",
+        "experimental_bearer_token",
+        "http_headers",
+        "env_http_headers",
+        "requires_openai_auth",
+        "supports_websockets",
+        "request_max_retries",
+        "stream_max_retries",
+        "stream_idle_timeout_ms",
+        "websocket_connect_timeout_ms",
+    }
+    unsupported = provider.keys() - allowed
+    if unsupported:
+        raise ValueError(f"unsupported Codex provider fields: {sorted(unsupported)}")
+    cfg["_codex_provider_id"] = provider_id
+    cfg["_codex_provider"] = provider
 
 
 def add_config_argument(parser: argparse.ArgumentParser) -> None:

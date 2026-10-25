@@ -1,0 +1,13 @@
+db_path = "memes.db"
+image_dir = "/home/marcin/internet"
+phash_threshold = 8
+
+[describe]
+backend = "codex-cli"
+codex_profile = "~/.codex/deepseek.config.toml"
+prompt_version = "vcodex1-master"
+
+[embed]
+base_url = "http://localhost:2138/v1"
+api_key = "ollama"
+model = "bge-m3"

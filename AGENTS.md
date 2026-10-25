@@ -224,24 +224,32 @@ means retrying a failed row overwrites the old failure cleanly.
   `reasoning_effort`; omit for providers that don't support it).
 - Second backend, `backend = "claude-code-cli"` (default `"openai"` is the HTTP path
   above): instead of POSTing to `base_url`, spawn the local `claude --print
-  --output-format json` CLI, so the run is billed against the Claude Code
+  --input-format stream-json --output-format stream-json --verbose` CLI, so the run is billed against the Claude Code
   subscription and needs no `api_key`/`base_url`. `model` goes to `--model`,
   `effort_level` to `--effort` (`low | medium | high | xhigh | max`), the image
-  is passed as a file path for the CLI's `Read` tool rather than a downscaled
-  data URL, and the schema goes in via `--json-schema` — the CLI's stand-in for
+  is passed directly as a base64 PNG content block on stdin without source paths
+  or file tools, and the schema goes in via `--json-schema` — the CLI's stand-in for
   `response_format`, which binds a `StructuredOutput` tool to the schema,
   validates the model's call against it and returns the parsed object as
   `structured_output` in the result envelope. Cheap way to A/B a frontier model
   against Ollama/xAI without an API key; the remaining tradeoff is the CLI's own
   system prompt in context. `--safe-mode` keeps `CLAUDE.md`, skills, plugins,
-  hooks and MCP out of the subprocess while leaving OAuth intact.
+  hooks and MCP out of the subprocess while leaving OAuth intact. Temporary cwd,
+  `--tools ""`, `--permission-mode dontAsk`, `--strict-mcp-config` and denied
+  `mcp__*` leave only `StructuredOutput`; no shell, file, web or agent tools.
+  The final JSONL `result` supplies the existing envelope. Checked with CLI 2.1.294
+  and a local fake endpoint, including inline images and the actual tool list.
 - Third backend, `backend = "codex-cli"`: `codex exec` with attached PNGs
   (stills max side 1440; selected animation frames at native resolution), `--output-schema` and
   `--output-last-message`. Existing CLI login supplies authentication; config
   `model` and optional `effort_level` select model/reasoning. Requires modern
-  CLI flags (implementation checked against 0.162.0). Temporary cwd,
+  CLI flags (tool restrictions checked against 0.164.0). Temporary cwd,
   read-only sandbox, user config/rules and AGENTS.md disabled, plus shell/web,
-  hooks/apps/remote plugins and host skill discovery disabled. Managed policy
+  hooks/apps/plugins, host skill discovery, agents/goals, browser/computer use,
+  image generation, local-image reading and question/plan tools disabled.
+  Images are attached directly; a local fake endpoint verified `tools: []`.
+  These restrictions apply to model tools; the CLI itself still authenticates,
+  logs sessions and contacts its model endpoint. Managed policy
   and additional environment/tool instructions may still apply. The versioned
   `prompts/<prompt_version>.txt` is copied verbatim to a temporary file passed via
   `model_instructions_file`, replacing the built-in main model instructions.
@@ -250,11 +258,51 @@ means retrying a failed row overwrites the old failure cleanly.
   is enabled for auditing (no `--ephemeral`).
   A temporary schema adds `additionalProperties: false` and drops unsupported
   `uniqueItems`; local validation enforces the canonical contract. Raw final
-  JSON is preserved. Process failures/timeouts/incomplete runs abort without
+  JSON is preserved. Process failures/incomplete runs abort without
   writing a row (including quota errors); re-run resumes. Unlike Claude, no
   automatic quota wait without a verified typed discriminator. Invalid final
-  descriptions and unreadable images remain per-image failures. Backend is
+  descriptions, timeouts and unreadable images are per-image failures: record
+  `failed_describe`, continue the queue, and retry with `--retry-failed`. Backend is
   not part of the description uniqueness tuple.
+  Optional `[describe].codex_profile` is a profile TOML path. `common.load_config`
+  imports model/model_reasoning_effort defaults and only the selected provider's
+  inert connection settings (merged with its sibling config.toml). Explicit
+  config and CLI model/effort overrides win; embed gets the same resolved tuple.
+  User permissions, instructions, hooks and tools remain ignored. Provider
+  helpers are rejected. Literal bearer/header credentials travel via environment
+  variables, outside argv. `config.deepseek.toml` uses the user's OpenRouter
+  profile; one real DeepSeek V4.1 Flash/high image succeeded. Local CLI wire
+  verification confirmed tools: [], image, schema and effort. The separate
+  `codex.deepseek-models.json` catalog enables the native CLI's none/low/high/max
+  effort selector and preserves its default instructions (0.164.0). The meme
+  adapter does not import that catalog or its instructions.
+- Fourth backend, `backend = "opencode-cli"`: OpenCode V2 `run --standalone
+  --format json` (checked against 2.1.3), PNG attachments with Codex's sizing
+  rules, model `provider/model` and optional effort as `#variant`. Existing
+  OpenCode login supplies authentication; `base_url`/`api_key` are unused.
+  Each image has temporary cwd and matching PWD, isolated OPENCODE_CONFIG_DIR
+  and XDG_CONFIG_HOME (no ~/.config/opencode); inherited OPENCODE_CONFIG and
+  OPENCODE_CLI_CONFIG_CONTENT are removed. Project config/AGENTS.md discovery
+  is disabled, all agent permissions are denied, with an additional `tool.use`
+  deny policy. MCP, skills and external plugins are blocked; only
+  built-in agent/provider/image/policy/catalog modules and provider authentication/routing
+  are enabled. The prompt is the agent system instruction, with the canonical
+  schema in the request; JSON is validated locally. A local provider confirmed
+  `tools: []` and both attached images. CLI-owned authentication, session storage
+  and network access remain; these flags are not an OS sandbox. Global custom
+  provider definitions are not loaded, and managed settings may still apply.
+  Process/error events, tool attempts and missing output stop without writing
+  a row; no quota wait. Timeouts/invalid descriptions/unreadable images fail
+  per-image. V2 may emit only completed text; accept valid JSON with exit 0 and
+  no errors then. Native step tokens are preserved when present; count only
+  explicit `total`, otherwise keep unknown usage as NULL. Config example:
+  `config.opencode.toml`. Backend remains outside the uniqueness tuple.
+  Remote free-tier compatibility is not established by local transport tests:
+  `opencode/*-free` can reject requests with tools disabled even while normal
+  OpenCode works (upstream #51241/#54744). Live 2.1.3 tests reproduced
+  `provider.free-limit` with both the custom agent and native build/identity
+  modules, with no tools. That discriminator alone does not prove spent quota;
+  the adapter adds context and stops without a row. Keep tool restrictions.
 - CLI flags: `--retry-failed` (also re-pick `failed_describe` rows — without
   it, both successes and failures count as "done"), `--limit N`, and
   `--model` / `--effort` overrides so an alternate variant can be tried without
@@ -283,7 +331,7 @@ means retrying a failed row overwrites the old failure cleanly.
   and `INSERT OR REPLACE` will overwrite the older-shaped row. Convention:
   bump `prompt_version` whenever the schema changes.
 - Still images are downscaled to max side 1440 px (`MAX_SIDE`; JPEG, quality 90) before being sent
-  as a data URL; smaller images pass through untouched. All three backends share
+  as a data URL; smaller images pass through untouched. All backends share
   `prepare_description_images`: Pillow decodes GIF/WebP/APNG frames and durations,
   FFmpeg detects cuts with `scene > 0.15`, and one middle frame per shot is selected.
   Without cuts, select the middle and last frame; collapse repeated selections of
