@@ -221,7 +221,88 @@ tabeli, callbacki podglądu i checkboxów, przełączanie trybów z osobnymi
 zapytaniami, powrót z identycznych kopii, pusty wynik oraz widoczność F1.
 Nie zastępuje to ręcznej oceny układu, klikania i przewijania dużej kolekcji.
 
+## Izolacja Claude i OpenCode
+
+1. Claude: uruchom rzeczywiste CLI z lokalnym endpointem Anthropic i fikcyjnym
+   logowaniem. W żądaniu mają być obrazy base64 i wyłącznie `StructuredOutput`.
+   Nie może być Read, Bash, narzędzi sieciowych/MCP ani ścieżek źródłowych.
+   Sprawdź odczyt ostatniego JSONL `result`, `structured_output` i usage.
+2. OpenCode V2: lokalny provider OpenAI-compatible, izolowane dane testowe.
+   Żądanie ma zawierać `tools: []`, obrazy i schemat; instrukcje systemowe mają
+   zawierać dokładny prompt. `cwd` i `PWD` wskazują ten sam katalog tymczasowy.
+   Ustawienia repozytorium, globalne AGENTS.md, MCP, skills i zewnętrzne pluginy
+   nie mogą trafiać do żądania. CLI zachowuje własną obsługę logowania i sesji.
+   Sprawdź też, że OPENCODE_CONFIG_DIR i XDG_CONFIG_HOME są tymczasowe, a
+   OPENCODE_CONFIG oraz OPENCODE_CLI_CONFIG_CONTENT nie są dziedziczone.
+   Monitor inotify na prawdziwym ~/.config/opencode nie może zgłosić otwarć
+   ani odczytów podczas działania klienta i serwera.
+3. Sprawdź statyczny obraz, kolejność i timestampy klatek oraz pliki ze spacjami.
+   OpenCode skaluje tylko obrazy statyczne do 1440; Python przekazuje Claude
+   natywny PNG, ale jego CLI może dodatkowo zmniejszać obrazy.
+4. W testowej bazie sprawdź zapis/pominięcie opisu, osobny effort, błędny JSON
+   i retry. OpenCode: błąd procesu, limit konta, brak wyniku lub próba narzędzia
+   mają zatrzymać kolejkę bez rekordu. Timeout i błędny opis są per-image failures.
+   Claude: typowane limity nadal wywołują oczekiwanie bez zapisu błędu obrazu.
+5. OpenCode: poprawny pełny JSON przy exit 0 bez zdarzeń `step_finish` też jest
+   sukcesem (ścieżka catch-up V2). Usage pozostaje wtedy NULL; przy natywnych
+   tokenach zachowaj cały obiekt i licz tylko jawne `total`.
+6. Sprawdź sprzątanie plików po sukcesie/błędzie, timeout/Ctrl+C oraz brak
+   regresji Codexa po wydzieleniu wspólnej walidacji i przygotowania PNG.
+
+Weryfikacja 2026-10-25: `/tmp/check_meme_new_clis.py` uruchomił Claude 2.1.294
+i OpenCode 2.1.3 przeciw lokalnemu serwerowi. Obydwa zwróciły poprawny opis;
+sprawdzono rzeczywiste listy narzędzi (`StructuredOutput` / pusta), dwa obrazy,
+rozdzielczość i brak ścieżek źródłowych. OpenCode zwrócił tekst bez step_finish
+i bez usage; adapter poprawnie go obsłużył. Nie wywoływano usług modeli ani nie
+zmieniano memes.db. `/tmp/check_meme_cli_regressions.py` przeszedł 6 testów
+adapterów i tymczasowej bazy (obrazy/klatki, schema, typed quota Claude,
+resume/skip/retry, izolacja, błędy, usage, sprzątanie). Dotychczasowy
+`/tmp/check_meme_codex_timeout.py` także przeszedł. Formatowanie i lint przeszły.
+Rzeczywiste logowanie i dostępność modelu nadal wymagają próby z kontem użytkownika.
+
+Weryfikacja katalogu 2026-10-25: `/tmp/check_meme_opencode_model.py` sprawdził
+`opencode/deepseek-v4.1-flash-free` z dokładnym środowiskiem izolowanego adaptera.
+Monitor inotify nie odnotował otwarć ani odczytów ~/.config/opencode podczas
+działania klienta i serwera. Do białej listy modułów dodano opencode.models.dev;
+bez niego wyłączony był także wbudowany katalog modeli. Nie wywołano modelu
+ani nie zmieniono bazy. Konfiguracja OpenCode używa dostępnego darmowego
+DeepSeeka bez niezweryfikowanego wariantu effort.
+Pełny test adaptera z lokalnym providerem także nie odnotował otwarć/odczytów
+tego katalogu; zachował `tools: []`, obrazy i poprawny opis. Z włączonym katalogiem
+modeli uzyskano też step_start/step_finish oraz natywne usage bez jawnego total.
+
+Weryfikacja błędu darmowej usługi 2026-10-25: metadane sesji potwierdzają
+udaną odpowiedź natywnego build na DeepSeek V4.1 Flash Free / max po nieudanym
+żądaniu adaptera na ten sam model/effort. Trzy minimalne próby bez obrazów i
+bez zmian w memes.db odtworzyły provider.free-limit: custom agent, build oraz
+build z natywnymi modułami agent/identity — zawsze z zakazem narzędzi.
+To pasuje do upstream #51241/#54744; sama nazwa błędu nie dowodzi zużytej puli.
+Nie włączano narzędzi ani dostępu do ~/.config/opencode w celu obejścia odmowy.
+
 ## Backend codex-cli
+
+Profile: sprawdź `config.deepseek.toml`. Dziedziczenie model/effort musi być
+widoczne również dla embed, a jawne ustawienia i CLI overrides mają pierwszeństwo.
+Nie importuj pozostałych ustawień użytkownika, szczególnie uprawnień i helpers.
+Token/header nie może pojawić się w argv ani komunikacie timeoutu. Testowy profil
+z shell_tool=true i danger-full-access nadal ma uruchomić adapter bez narzędzi.
+
+Weryfikacja profilu 2026-10-25: `/tmp/check_meme_codex_profile.py` przeszedł
+4 testy wyboru providera, overrides, odrzucania helpers i przekazywania sekretów
+przez środowisko. `/tmp/check_meme_codex_profile_wire.py` sprawdził rzeczywiste
+CLI, lokalny endpoint, autoryzację fikcyjnym tokenem, model/effort, tools: [],
+obraz i schema. Próba `--limit 1 -v` z rzeczywistym OpenRouterem opisała i zapisała
+obraz vertical/1636857810162.jpg (5 sekund, 4898 tokenów, effort high). Kolejne
+uruchomienia tej konfiguracji powinny pomijać już zapisany wariant.
+Katalog `codex.deepseek-models.json` przeszedł parser Codexa 0.164.0 i ogłasza
+none/low/high/max zgodnie z publicznymi metadanymi OpenRoutera. Instrukcje
+domyślne przechwycono lokalnie z nieznanego wcześniej modelu, aby ich nie zmieniać.
+
+Kontrola ograniczeń narzędzi: uruchom adapter z rzeczywistym CLI i lokalnym
+endpointem testowym (fikcyjne logowanie, osobny `CODEX_HOME`). Żądanie do
+`/v1/responses` ma zawierać `tools: []`, obraz/klatki i schemat. Syntetyczna
+odpowiedź ma przejść przez adapter do JSON-a opisu. Sprawdź model z konfiguracji
+oraz model spoza katalogu. Samo sprawdzenie argumentów procesu nie wystarcza.
 
 - [ ] Ustaw `backend = "codex-cli"`, dostępny model wizyjny i prompt w osobnym
   TOML (`prompt_version = "vcodex1-master"`); `base_url` i `api_key` nie są
@@ -235,8 +316,10 @@ Nie zastępuje to ręcznej oceny układu, klikania i przewijania dużej kolekcji
   `--model`, `--effort`, `--path` i `--retry-failed` działają jak wcześniej.
 - [ ] Sprawdź PNG/JPEG oraz animacje GIF/WebP/APNG, także ścieżkę ze spacjami.
   Wszystkie wybrane klatki trafiają do modelu w kolejności chronologicznej.
-- [ ] Błąd procesu, limit konta, timeout i brak końcowej odpowiedzi zatrzymują
+- [ ] Błąd procesu, limit konta i brak końcowej odpowiedzi zatrzymują
   przebieg bez rekordu dla bieżącego obrazu. Ponowne uruchomienie go podejmuje.
+- [ ] Timeout zapisuje `failed_describe` z komunikatem o przekroczeniu czasu
+  i przechodzi do następnego obrazu. `--retry-failed` ponawia tę próbę.
 - [ ] Niepoprawny końcowy JSON, powtórzone keywords, zły humor_type lub uszkodzony
   obraz dają `failed_describe`; pozostałe obrazy są przetwarzane dalej.
 - [ ] Pierwszy Ctrl+C kończy i zapisuje bieżący opis; drugi przerywa proces.

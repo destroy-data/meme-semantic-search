@@ -25,7 +25,8 @@ from PIL import Image
 import common
 
 # The VLM output contract is data, not code: the model sees it verbatim (as
-# response_format on openai, --json-schema on Claude, --output-schema on Codex),
+# response_format on openai, --json-schema on Claude, prompt text on OpenCode,
+# --output-schema on Codex),
 # and it changes on its own cadence. Note that `keywords` is one flat list
 # holding both languages: 3-8 concepts, each given in Polish and English.
 SCHEMA = json.loads((Path(__file__).parent / "description_schema.json").read_text())
@@ -189,6 +190,11 @@ def total_tokens(usage: dict | None) -> int | None:
     total = usage.get("total_tokens")
     if type(total) is int and total >= 0:
         return total
+    # OpenCode's step_finish tokens use their native input/output/cache shape.
+    # Only use its explicit total; guessing could double-count reasoning/cache.
+    if "input" in usage or "output" in usage:
+        total = usage.get("total")
+        return total if type(total) is int and total >= 0 else None
     if "prompt_tokens" in usage or "completion_tokens" in usage:
         counts = [usage.get("prompt_tokens"), usage.get("completion_tokens")]
     else:
@@ -246,12 +252,18 @@ def request_description(
 
 
 def run_description_cli(
-    argv: list[str], body: str, *, cwd: str | None = None, verbose: bool = False
+    argv: list[str],
+    body: str,
+    *,
+    cwd: str | None = None,
+    verbose: bool = False,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
     """Run a CLI/helper with timeout and process-group interrupt handling."""
     proc = subprocess.Popen(
         argv,
         cwd=cwd,
+        env=env,
         # Both streams captured, never inherited: stdout carries the result
         # envelope that tells a spent quota from a broken image, and stderr is
         # kept for the error message when there is no envelope at all. Under -v
@@ -297,27 +309,75 @@ def run_description_cli(
     return proc.returncode, stdout, stderr
 
 
+def jsonl_events(stdout: str) -> list[dict]:
+    events = []
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+def validate_description(raw: str) -> None:
+    """Enforce the canonical description contract across CLI backends."""
+    data = json.loads(raw)
+    if not isinstance(data, dict) or set(data) != set(SCHEMA["properties"]):
+        raise ValueError("output must contain exactly the description fields")
+    for key, spec in SCHEMA["properties"].items():
+        value = data[key]
+        if spec["type"] == "string":
+            if not isinstance(value, str):
+                raise ValueError(f"{key} must be a string")
+        else:
+            if not isinstance(value, list) or not all(
+                isinstance(v, str) for v in value
+            ):
+                raise ValueError(f"{key} must be an array of strings")
+            if not spec["minItems"] <= len(value) <= spec["maxItems"]:
+                raise ValueError(f"{key} has an invalid number of items")
+            if spec.get("uniqueItems") and len(set(value)) != len(value):
+                raise ValueError(f"{key} contains duplicates")
+            enum = spec["items"].get("enum")
+            if enum and any(v not in enum for v in value):
+                raise ValueError(f"{key} contains an unknown value")
+
+
+def description_json_prompt(prompt: str) -> str:
+    return (
+        f"{prompt}\n\nOpisz załączony mem. Zwróć wyłącznie JSON zgodny "
+        "z poniższym schematem, bez Markdown ani komentarzy. "
+        "Nazwy kluczy muszą być dokładnie takie jak w schemacie:\n"
+        + json.dumps(SCHEMA, ensure_ascii=False)
+    )
+
+
 def request_description_cli(
     cfg: dict, prompt: str, images: list[DescriptionImage], *, verbose: bool = False
 ) -> tuple[str, dict | None]:
     """Describe through the local Claude Code CLI instead of an HTTP endpoint.
 
     Billed against the Claude Code subscription, so no api_key/base_url is used.
-    Differences from the OpenAI-compatible path, all forced by the CLI: the
-    images go in as file paths for the Read tool (no data URL, no downscaling
-    on our side), the schema travels as --json-schema instead of
-    response_format, and the answer arrives wrapped in a result envelope.
+    Streamed image blocks need no Read tool. Only the schema-bound output
+    tool is available; no built-in or MCP tools can access the host.
     """
     argv = [
         "claude",
         "--print",
         "--output-format",
-        "json",
-        "--allowed-tools",
-        "Read",
-        # The CLI's stand-in for response_format: it exposes a StructuredOutput
-        # tool bound to this schema, validates the call against it and puts the
-        # parsed object in the envelope. Same enforcement the HTTP path gets.
+        "stream-json",
+        "--verbose",
+        "--input-format",
+        "stream-json",
+        "--tools",
+        "",
+        "--disallowed-tools",
+        "mcp__*",
+        "--strict-mcp-config",
+        "--permission-mode",
+        "dontAsk",
         "--json-schema",
         json.dumps(SCHEMA, ensure_ascii=False),
         # No CLAUDE.md (global or project), skills, plugins, hooks or MCP: the
@@ -327,31 +387,48 @@ def request_description_cli(
         "--model",
         cfg["model"],
     ]
-    for directory in sorted({image.path.parent for image in images}):
-        argv += ["--add-dir", str(directory)]
     if cfg.get("effort_level"):
         argv += ["--effort", cfg["effort_level"]]
-    # Key names need no nudge: the schema is the StructuredOutput tool's own
-    # input schema, so the model cannot emit the prompt's Polish field labels.
-    # This line exists for the superseded prompts (v1, v2, vgrok, vgrok2beta),
-    # which still close with "answer with bare JSON" — written for
-    # response_format, and on this path it would leave the tool uncalled.
+    content = [
+        {
+            "type": "text",
+            "text": f"{prompt}\n\nOpisz załączony mem. "
+            "Wynik oddaj przez structured output, nie jako tekst.",
+        }
+    ]
+    for source in images:
+        # Preserve Claude's native-size inputs, including animation frames.
+        with Image.open(source.path) as image:
+            buf = io.BytesIO()
+            image.convert("RGB").save(buf, "PNG")
+        content.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": base64.b64encode(buf.getvalue()).decode(),
+                },
+            }
+        )
     body = (
-        f"{prompt}\n\nOpisz mema z poniższych plików (otwórz każdy):\n"
-        + "\n".join(str(image.path) for image in images)
-        + "\n\n"
-        "Wynik oddaj przez structured output, nie jako tekst."
+        json.dumps(
+            {"type": "user", "message": {"role": "user", "content": content}},
+            ensure_ascii=False,
+        )
+        + "\n"
     )
-    returncode, stdout, stderr = run_description_cli(argv, body, verbose=verbose)
+    with tempfile.TemporaryDirectory(prefix="meme-claude-") as tmp:
+        returncode, stdout, stderr = run_description_cli(
+            argv, body, cwd=tmp, verbose=verbose
+        )
     # A failed run still prints its result envelope (exit 1, is_error=true),
     # and that envelope is the only place the cause is spelled out.
-    try:
-        envelope = json.loads(stdout)
-    except json.JSONDecodeError:
-        envelope = None
-    if envelope is None:
+    results = [event for event in jsonl_events(stdout) if event.get("type") == "result"]
+    if not results:
         detail = ((stderr or "") + (stdout or "")).strip()
         raise RuntimeError(f"claude exited {returncode}: {detail[:500] or 'no output'}")
+    envelope = results[-1]
     if returncode != 0 or envelope.get("is_error"):
         # `result` first: the leading usage/session-id keys used to fill the
         # whole truncated message and hide the actual reason.
@@ -364,17 +441,189 @@ def request_description_cli(
         if is_usage_limit(envelope):
             raise UsageLimitError(detail)
         raise RuntimeError(f"claude: {detail}")
-    # Schema-validated and already parsed by the CLI, so no fence-stripping or
-    # brace-hunting here. Missing means the model answered in prose instead of
-    # calling the tool — a failed_describe row, never a half-parsed description.
     data = envelope.get("structured_output")
-    if not data:
-        raise ValueError(f"no structured output: {envelope.get('result', '')[:200]}")
-    return json.dumps(data, ensure_ascii=False), envelope.get("usage")
+    if not isinstance(data, dict) or not data:
+        raise ValueError("claude completed without structured output")
+    raw = json.dumps(data, ensure_ascii=False)
+    validate_description(raw)
+    return raw, envelope.get("usage")
 
 
-class CodexCLIError(RuntimeError):
+class DescriptionCLIError(RuntimeError):
     """An incomplete CLI run must not mark images as done (quota/auth/network)."""
+
+
+class CodexCLIError(DescriptionCLIError):
+    pass
+
+
+class OpenCodeCLIError(DescriptionCLIError):
+    pass
+
+
+def prepare_cli_attachments(
+    images: list[DescriptionImage], workdir: Path
+) -> list[Path]:
+    attachments = []
+    for index, source in enumerate(images, 1):
+        image_path = workdir / f"image-{index:03d}.png"
+        with Image.open(source.path) as image:
+            image = image.convert("RGB")
+            if source.timestamp is None:
+                image.thumbnail((MAX_SIDE, MAX_SIDE))
+            image.save(image_path)
+        attachments.append(image_path)
+    return attachments
+
+
+def request_description_opencode_cli(
+    cfg: dict, prompt: str, images: list[DescriptionImage], *, verbose: bool = False
+) -> tuple[str, dict | None]:
+    """OpenCode V2: attached images, isolated config and no model tools."""
+    model = cfg["model"]
+    if cfg.get("effort_level"):
+        if "#" in model:
+            raise ValueError("opencode: use effort_level or a #variant, not both")
+        model += "#" + cfg["effort_level"]
+    with tempfile.TemporaryDirectory(prefix="meme-opencode-") as tmp:
+        workdir = Path(tmp)
+        attachments = prepare_cli_attachments(images, workdir)
+        sizes = []
+        for attachment in attachments:
+            with Image.open(attachment) as image:
+                sizes.append(image.size)
+        deny = [{"action": "*", "resource": "*", "effect": "deny"}]
+        # V2 implements even agent/provider config and image handling as plugins.
+        # Keep only those built-ins and provider authentication/routing.
+        builtin_plugins = (
+            "opencode.config.agent",
+            "opencode.config.provider",
+            "opencode.config.image",
+            "opencode.config.policy",
+            "opencode.models.dev",
+            "opencode.provider.*",
+        )
+        config = {
+            "update": "disable",
+            "share": "disabled",
+            "snapshots": False,
+            "formatter": False,
+            "lsp": False,
+            "plugins": ["-*", *builtin_plugins],
+            "permissions": deny,
+            "policies": [
+                {"action": "tool.use", "resource": "*", "effect": "deny"},
+                {"action": "integration.use", "resource": "mcp:*", "effect": "deny"},
+                {"action": "integration.use", "resource": "skill:*", "effect": "deny"},
+                {"action": "integration.use", "resource": "plugin:*", "effect": "deny"},
+                *[
+                    {
+                        "action": "integration.use",
+                        "resource": f"plugin:{plugin}",
+                        "effect": "allow",
+                    }
+                    for plugin in builtin_plugins
+                ],
+            ],
+            "agents": {
+                "meme-describe": {
+                    "mode": "primary",
+                    "system": prompt,
+                    "permissions": deny,
+                }
+            },
+            # Frame selection and still scaling are already done by Python.
+            "media": {
+                "image": {
+                    "auto_resize": False,
+                    "max_width": max(width for width, _ in sizes),
+                    "max_height": max(height for _, height in sizes),
+                    "max_base64_bytes": max(
+                        (path.stat().st_size + 2) // 3 * 4 for path in attachments
+                    ),
+                }
+            },
+        }
+        env = dict(os.environ)
+        env.pop("OPENCODE_CONFIG", None)
+        env.pop("OPENCODE_CLI_CONFIG_CONTENT", None)
+        env.update(
+            # OpenCode run uses PWD in preference to the subprocess cwd.
+            PWD=tmp,
+            XDG_CONFIG_HOME=str(workdir / "xdg-config"),
+            OPENCODE_CONFIG_DIR=str(workdir / "config"),
+            OPENCODE_CONFIG_PROJECT_DISABLE="1",
+            OPENCODE_DISABLE_CLAUDE_CODE="1",
+            OPENCODE_DISABLE_FILEWATCHER="1",
+            OPENCODE_CONFIG_CONTENT=json.dumps(config, ensure_ascii=False),
+        )
+        argv = [
+            "opencode",
+            "run",
+            "--standalone",
+            "--format",
+            "json",
+            "--agent",
+            "meme-describe",
+            "--title",
+            "Meme description",
+            "--model",
+            model,
+        ]
+        for attachment in attachments:
+            argv += ["--file", str(attachment)]
+        argv += [
+            "--",
+            description_image_prompt(description_json_prompt(""), images),
+        ]
+        try:
+            returncode, stdout, stderr = run_description_cli(
+                argv, "", cwd=tmp, env=env, verbose=verbose
+            )
+        except subprocess.TimeoutExpired as error:
+            raise TimeoutError(
+                f"opencode timed out after {error.timeout} seconds"
+            ) from error
+        except OSError as error:
+            raise OpenCodeCLIError(f"opencode: {error}") from error
+        events = jsonl_events(stdout)
+        errors = [event for event in events if event.get("type") == "error"]
+        finished = [event for event in events if event.get("type") == "step_finish"]
+        if returncode or errors:
+            detail = (
+                json.dumps(errors, ensure_ascii=False) if errors else stderr or stdout
+            )
+            hint = ""
+            if cfg["model"].startswith("opencode/") and any(
+                event.get("error", {}).get("type") == "provider.free-limit"
+                for event in errors
+            ):
+                # This gateway error also occurs with restricted agents;
+                # its typed name alone does not prove that quota was consumed.
+                hint = (
+                    "\nOpenCode free-tier requests can also be rejected when tools "
+                    "are disabled. This adapter deliberately sends tools: []; "
+                    "the error does not establish that your quota is exhausted. "
+                    "See https://github.com/anomalyco/opencode/issues/51241"
+                )
+            raise OpenCodeCLIError(
+                f"opencode exited {returncode}: {detail[:1000] or 'no completed step'}{hint}"
+            )
+        if finished and finished[-1].get("part", {}).get("reason") != "stop":
+            raise OpenCodeCLIError("opencode did not finish the description normally")
+        if any(event.get("type") == "tool_use" for event in events):
+            raise OpenCodeCLIError("opencode unexpectedly attempted to use a tool")
+        raw = "".join(
+            event["part"]["text"] for event in events if event.get("type") == "text"
+        )
+        if not raw.strip():
+            raise OpenCodeCLIError("opencode completed without a description")
+        validate_description(raw)
+        # V2's catch-up path can emit only completed text, with no step events.
+        # Exit 0 plus a valid full description still means success; usage is
+        # unknown then, rather than a made-up zero.
+        usage = finished[-1].get("part", {}).get("tokens") if finished else None
+        return raw, usage
 
 
 def request_description_codex_cli(
@@ -395,15 +644,7 @@ def request_description_codex_cli(
         for spec in schema["properties"].values():
             spec.pop("uniqueItems", None)
         schema_path.write_text(json.dumps(schema), encoding="utf-8")
-        attachments = []
-        for index, source in enumerate(images, 1):
-            image_path = workdir / f"image-{index:03d}.png"
-            with Image.open(source.path) as image:
-                image = image.convert("RGB")
-                if source.timestamp is None:
-                    image.thumbnail((MAX_SIDE, MAX_SIDE))
-                image.save(image_path)
-            attachments.append(image_path)
+        attachments = prepare_cli_attachments(images, workdir)
         argv = [
             "codex",
             "exec",
@@ -415,6 +656,22 @@ def request_description_codex_cli(
             "apps",
             "--disable",
             "remote_plugin",
+            "--disable",
+            "plugins",
+            "--disable",
+            "multi_agent",
+            "--disable",
+            "goals",
+            "--disable",
+            "browser_use",
+            "--disable",
+            "computer_use",
+            "--disable",
+            "image_generation",
+            "--disable",
+            "code_mode",
+            "--disable",
+            "view_image",
             "--disable",
             "skill_search",
             "--enable",
@@ -440,8 +697,54 @@ def request_description_codex_cli(
             "-c",
             "features.shell_tool=false",
             "-c",
+            "tools.experimental_request_user_input.enabled=false",
+            "-c",
+            "tools.update_plan.enabled=false",
+            "-c",
             'approval_policy="never"',
         ]
+        env = None
+        if cfg.get("_codex_provider_id"):
+            provider = dict(cfg["_codex_provider"])
+            env = dict(os.environ)
+            # Keep credentials out of argv, process listings and timeout errors.
+            token = provider.pop("experimental_bearer_token", None)
+            if token is not None:
+                env["MEME_CODEX_PROVIDER_TOKEN"] = token
+                provider["env_key"] = "MEME_CODEX_PROVIDER_TOKEN"
+            headers = dict(provider.pop("env_http_headers", {}))
+            for index, (name, value) in enumerate(
+                provider.pop("http_headers", {}).items()
+            ):
+                key = f"MEME_CODEX_PROVIDER_HEADER_{index}"
+                env[key] = value
+                headers[name] = key
+            if headers:
+                provider["env_http_headers"] = headers
+            provider_id = cfg["_codex_provider_id"]
+            argv += ["-c", "model_provider=" + json.dumps(provider_id)]
+            fields = []
+            for name, value in provider.items():
+                # These settings are scalar values, except header-name → env
+                # mappings. JSON string escaping is also valid TOML escaping.
+                if isinstance(value, dict):
+                    encoded = (
+                        "{"
+                        + ", ".join(
+                            json.dumps(k) + "=" + json.dumps(v)
+                            for k, v in value.items()
+                        )
+                        + "}"
+                    )
+                else:
+                    encoded = json.dumps(value)
+                fields.append(json.dumps(name) + "=" + encoded)
+            if fields:
+                table = "{" + ", ".join(fields) + "}"
+                argv += [
+                    "-c",
+                    "model_providers={" + json.dumps(provider_id) + "=" + table + "}",
+                ]
         for attachment in attachments:
             argv += ["--image", str(attachment)]
         if cfg.get("effort_level"):
@@ -451,19 +754,18 @@ def request_description_codex_cli(
             "Opisz załączony mem. Zwróć wyłącznie JSON zgodny ze schematem.", images
         )
         try:
-            returncode, stdout, stderr = run_description_cli(
-                argv, body, cwd=tmp, verbose=verbose
-            )
-        except (OSError, subprocess.TimeoutExpired) as error:
+            cli_options = {"cwd": tmp, "verbose": verbose}
+            if env is not None:
+                cli_options["env"] = env
+            returncode, stdout, stderr = run_description_cli(argv, body, **cli_options)
+        except subprocess.TimeoutExpired as error:
+            # A slow image must not stop the queue like quota/auth failures do.
+            raise TimeoutError(
+                f"codex timed out after {error.timeout} seconds"
+            ) from error
+        except OSError as error:
             raise CodexCLIError(f"codex: {error}") from error
-        events = []
-        for line in stdout.splitlines():
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(event, dict):
-                events.append(event)
+        events = jsonl_events(stdout)
         failures = [e for e in events if e.get("type") == "turn.failed"]
         completed = [e for e in events if e.get("type") == "turn.completed"]
         if returncode or failures or not completed:
@@ -477,26 +779,7 @@ def request_description_codex_cli(
         if not output.is_file() or not output.read_text(encoding="utf-8").strip():
             raise CodexCLIError("codex completed without a final response")
         raw = output.read_text(encoding="utf-8")
-        data = json.loads(raw)
-        if not isinstance(data, dict) or set(data) != set(SCHEMA["properties"]):
-            raise ValueError("Codex output must contain exactly the description fields")
-        for key, spec in SCHEMA["properties"].items():
-            value = data[key]
-            if spec["type"] == "string":
-                if not isinstance(value, str):
-                    raise ValueError(f"{key} must be a string")
-            else:
-                if not isinstance(value, list) or not all(
-                    isinstance(v, str) for v in value
-                ):
-                    raise ValueError(f"{key} must be an array of strings")
-                if not spec["minItems"] <= len(value) <= spec["maxItems"]:
-                    raise ValueError(f"{key} has an invalid number of items")
-                if spec.get("uniqueItems") and len(set(value)) != len(value):
-                    raise ValueError(f"{key} contains duplicates")
-                enum = spec["items"].get("enum")
-                if enum and any(v not in enum for v in value):
-                    raise ValueError(f"{key} contains an unknown value")
+        validate_description(raw)
         return raw, completed[-1].get("usage")
 
 
@@ -572,9 +855,18 @@ def describe_memes(
     version = cfg["prompt_version"]
     model = cfg["model"]
     backend = cfg.get("backend", "openai")
-    if backend not in ("openai", "claude-code-cli", "codex-cli"):
+    if backend not in ("openai", "claude-code-cli", "codex-cli", "opencode-cli"):
         raise SystemExit(f"unknown describe backend: {backend}")
-    executable = {"claude-code-cli": "claude", "codex-cli": "codex"}.get(backend)
+    if backend == "opencode-cli":
+        if not re.fullmatch(r"[^/#]+/[^#]+(?:#[^#]+)?", model):
+            raise SystemExit("opencode: model must use provider/model[#variant]")
+        if cfg.get("effort_level") and "#" in model:
+            raise SystemExit("opencode: use effort_level or a #variant, not both")
+    executable = {
+        "claude-code-cli": "claude",
+        "codex-cli": "codex",
+        "opencode-cli": "opencode",
+    }.get(backend)
     if executable and not shutil.which(executable):
         raise SystemExit(f"{backend}: executable not found: {executable}")
     effort = cfg.get("effort_level")  # None = not set / not sent to API
@@ -699,6 +991,11 @@ def describe_rows(
                         raw, usage = request_description_codex_cli(
                             cfg, prompt, images, verbose=verbose
                         )
+                    elif backend == "opencode-cli":
+                        started = time.monotonic()
+                        raw, usage = request_description_opencode_cli(
+                            cfg, prompt, images, verbose=verbose
+                        )
                     else:
                         urls = [
                             image_data_url(
@@ -735,7 +1032,7 @@ def describe_rows(
                     )
                     print_description(data)
                 break
-            except CodexCLIError as e:
+            except DescriptionCLIError as e:
                 # JSONL errors need not carry a typed quota code. Stop without
                 # poisoning the queue or guessing from localized prose.
                 raise SystemExit(

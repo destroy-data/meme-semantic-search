@@ -3,10 +3,14 @@ image_dir = "<path>"
 phash_threshold = 8
 
 [describe]
-# backend = "openai"  # also "claude-code-cli" or "codex-cli"
+# backend = "openai"  # also "claude-code-cli", "codex-cli", "opencode-cli"
 # For codex-cli: set model to a vision-capable model available in your Codex login.
 # Use prompt_version = "vcodex1-master"; its file replaces built-in model instructions.
 # base_url/api_key are unused; effort_level goes to model_reasoning_effort.
+# Optional codex_profile = "~/.codex/deepseek.config.toml" imports model/effort
+# defaults and the selected provider only. See config.deepseek.toml.
+# For opencode-cli (V2): model = "provider/model" from your OpenCode login;
+# effort_level selects a #variant. See config.opencode.toml. No model tools.
 base_url = "http://localhost:11434/v1"
 api_key = "ollama"  # any non-empty value works for Ollama; real key for cloud providers
 model = "qwen3-vl:8b"
