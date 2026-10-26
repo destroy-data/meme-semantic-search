@@ -23,7 +23,7 @@ Search descriptions using `bge-m3` and FTS; preserve resumability and stored wor
 
 ## Testing Guidelines
 
-No automated suite or coverage target is committed. Follow [TESTING.md](TESTING.md) on copied images; verify repeat runs, retries, duplicates, and affected GUI behavior. Exclude prompt-example hash prefixes `045f3bf5`, `0be81bf3`, and `b8bbfce6` from quality comparisons.
+No automated suite or coverage target is committed. Follow [TESTING.md](TESTING.md) on copied images; verify repeat runs, retries, duplicates, and affected GUI behavior. Exclude prompt-example hash prefixes `045f3bf5`, `0be81bf3`, `b8bbfce6`, and `6e7aa3c5` from quality comparisons.
 
 GUI deletion and background embedding are implemented despite older deferred-feature notes. GUI embedding uses the newest successful description across configurations; CLI embedding stays within the active prompt.
 

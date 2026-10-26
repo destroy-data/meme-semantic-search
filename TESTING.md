@@ -11,8 +11,14 @@ albo po zmianie dowolnego etapu pipeline'u.
 - [ ] W próbce umieść: kilka niezależnych memów, dwie identyczne kopie pliku,
   parę wyraźnie podobnych obrazów, jeden uszkodzony plik z rozszerzeniem obrazu
   oraz co najmniej jeden mem po polsku i po angielsku.
-- [ ] Do ręcznej oceny opisów nie używaj trzech „spalonych” próbek wymienionych
-  w `AGENTS.md`: `045f3bf5`, `0be81bf3`, `b8bbfce6`.
+- [ ] Do ręcznej oceny opisów nie używaj „spalonych” próbek wymienionych
+  w `AGENTS.md`: `045f3bf5`, `0be81bf3`, `b8bbfce6`, `6e7aa3c5`.
+  Ostatnia to przykład 4 z `vcodex3`: prowadząca pandemiczne lekcje TVP
+  zestawiona z Monkey Puppet. Kontekst programów potwierdził właściciel zbioru.
+- [ ] Dla `vcodex3` sprawdź też obrazek bez żartu: `the_clue` opisuje temat
+  lub przekaz, a `humor_type` może być `[]`, jeśli żadna kategoria nie pasuje.
+  Ta wersja promptu wprowadza obsługę pustej listy w schemacie; starsze
+  poprawne opisy pozostają zgodne z rozszerzonym kontraktem.
 - [ ] Uruchom `ruff format . && ruff check .`; oba polecenia muszą przejść bez
   zmian i błędów.
 
