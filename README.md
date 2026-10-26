@@ -63,12 +63,24 @@ Make sure Ollama is running. Edit `config.toml` before indexing:
 
 1. Set `image_dir` to the folder containing your memes. Subdirectories are
    scanned too.
-2. Set `db_path` to the SQLite file where the collection and its indexes will
+2. Optionally set `exclude_paths` to files or directories relative to `image_dir`:
+
+   ```toml
+   image_dir = "/path/to/memes"
+   exclude_paths = ["private", "drafts/unused.png"]
+   ```
+
+   A directory entry excludes everything beneath it. Absolute paths and `..`
+   are rejected. The next scan removes excluded paths from `meme_files`. If no
+   copy remains, its descriptions are kept for a future reappearance, while its
+   search indexes are removed. Archived rows in `memes` retain their hash and
+   description but have an empty `path`.
+3. Set `db_path` to the SQLite file where the collection and its indexes will
    be stored. It is created on the first scan.
-3. Configure `[describe]` using one of the options below. The example file
+4. Configure `[describe]` using one of the options below. The example file
    defaults to a local `qwen3-vl:8b`; that model is only needed if you keep the
    local description setup (`ollama pull qwen3-vl:8b`).
-4. Keep `[embed]` pointing at local Ollama:
+5. Keep `[embed]` pointing at local Ollama:
 
 ```toml
 [embed]
@@ -125,13 +137,15 @@ are unused. The adapters restrict model tools and send the prepared images and
 description instructions. Check one image before starting a full collection:
 
 ```sh
-uv run memes.py index --limit 1
+uv run memes.py scan
+uv run memes.py describe --limit 1
+uv run memes.py embed --limit 1
 uv run memes.py gui
 ```
 
-`--limit 1` still scans the entire folder, then processes at most one description
-and one embedding independently. Inspect the result in the GUI. To print a
-description while generating it, run `uv run memes.py describe --limit 1 -v`;
+`scan` scans the entire folder and groups duplicates. `--limit 1` applies only
+to the selected `describe` or `embed` stage. Inspect the result in the GUI.
+To print a description, run `uv run memes.py describe --limit 1 -v`;
 already completed descriptions are skipped.
 
 ## Indexing and searching
@@ -139,12 +153,18 @@ already completed descriptions are skipped.
 Build or update the collection with:
 
 ```sh
-uv run memes.py index
+uv run memes.py all
 ```
 
-This scans files, groups duplicates, generates missing descriptions, then embeds
-them. Run it again after adding images. Completed work is saved incrementally,
-so an interrupted run can be resumed by running the same command.
+`all` runs `scan`, `describe`, and `embed` in that order. You can also run each
+stage separately. `scan` finds files and groups duplicates; `describe` generates
+missing descriptions; `embed` builds missing search indexes. Completed work is
+saved incrementally, so an interrupted run can be resumed with the same command.
+`all` accepts their flags: `--regroup-only` and `--prune-missing` affect scanning;
+`--path`, `--undescribed-only`, `--any-effort`, `--effort`, and `-v` affect
+describing. `--model` selects the model for describing and embedding, while
+`--limit` caps describing and embedding separately. `--path` selects descriptions
+to generate; embedding still processes all eligible descriptions.
 
 Search from the terminal or open the GUI:
 
@@ -163,7 +183,8 @@ Every command accepts `--config FILE` after its name; the default is
 `config.toml`. For example:
 
 ```sh
-uv run memes.py index --config config.test.toml --limit 1
+uv run memes.py all --config config.test.toml --limit 1
+uv run memes.py describe --config config.test.toml --limit 1
 uv run memes.py search --config config.test.toml "widening the belt"
 ```
 
@@ -210,17 +231,19 @@ works without Ollama; semantic search and embedding need it running.
 | Task | Command or setting |
 |---|---|
 | Discover files without calling models | `uv run memes.py scan` |
+| Run scan, describe and embed in order | `uv run memes.py all` |
 | Generate missing descriptions and print them | `uv run memes.py describe -v` |
 | Retry recorded description failures | `uv run memes.py describe --retry-failed` |
 | Describe only memes with no successful description under any settings | `uv run memes.py describe --undescribed-only` |
 | Generate missing embeddings from saved descriptions | `uv run memes.py embed` |
-| Retry descriptions and continue through embedding | `uv run memes.py index --retry-failed` |
+| Retry descriptions and continue through embedding | `uv run memes.py all --retry-failed` |
 | Recompute similarity groups from stored hashes | Change `phash_threshold`, then run `uv run memes.py scan --regroup-only` |
-| Remove database records for files no longer present | `uv run memes.py scan --prune-missing` |
+| Remove stale paths under `image_dir` | `uv run memes.py scan` |
+| Also check stored paths outside `image_dir` | `uv run memes.py scan --prune-missing` |
 
 `describe --undescribed-only` still needs `--retry-failed` for a failed attempt
-under the active settings. Description, embedding and full-index commands accept
-`--limit N`; it limits the work in that run, not the scanned collection.
+under the active settings. `describe`, `embed`, and `all` accept `--limit N`; it
+limits the description and embedding work in that run, not the scanned collection.
 
 Descriptions are stored separately by model, `prompt_version` and
 `effort_level`. Changing those settings normally adds another variant while

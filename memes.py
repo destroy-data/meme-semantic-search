@@ -1,13 +1,10 @@
 """Aggregate CLI over every pipeline stage: `memes.py <stage> [flags]`.
 
-`index` runs the whole indexing pipeline (scan -> describe -> embed); the
-individual stages are also available for running one in isolation. Each stage
-module stays runnable on its own (`uv run describe.py ...`) — this file just
-hangs their `add_arguments` / `run` pair off a subparser.
+`all` runs scan, describe and embed in order. Other commands run only their
+selected stage. Stage modules also stay runnable on their own.
 """
 
 import argparse
-from pathlib import Path
 
 import common
 import describe
@@ -23,23 +20,14 @@ STAGES = [
 ]
 
 
-def run_index(args: argparse.Namespace, cfg: dict) -> None:
-    """The whole indexing pipeline, sharing one connection across stages.
-
-    Every stage is idempotent and resumable, so this is also the incremental
-    update path: re-run it after adding memes and only new work happens.
-    """
-    con = common.connect(cfg["db_path"], init_schema=True)
+def run_all(args: argparse.Namespace, cfg: dict) -> None:
+    """Run each stage with the same flags it accepts when run alone."""
     print("== scan ==")
-    scan.ingest(con, Path(cfg["image_dir"]).expanduser())
-    scan.regroup(con, cfg["phash_threshold"])
+    scan.run(args, cfg)
     print("== describe ==")
-    describe.describe_memes(
-        con, cfg["describe"], retry_failed=args.retry_failed, limit=args.limit
-    )
+    describe.run(args, cfg)
     print("== embed ==")
-    embed.embed_descriptions(con, cfg["describe"], cfg["embed"], limit=args.limit)
-    con.close()
+    embed.run(args, cfg)
 
 
 def run_gui(args: argparse.Namespace, cfg: dict) -> None:
@@ -53,21 +41,58 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="memes", description=__doc__)
     sub = parser.add_subparsers(dest="stage", required=True)
 
-    index_parser = sub.add_parser(
-        "index",
-        help="run the full indexing pipeline: scan -> describe -> embed",
+    all_parser = sub.add_parser(
+        "all",
+        help="run scan, describe and embed in order",
         description="Run scan, describe and embed in order. Incremental and resumable.",
     )
-    common.add_config_argument(index_parser)
-    index_parser.add_argument(
+    common.add_config_argument(all_parser)
+    all_parser.add_argument(
         "--limit", type=int, default=0, help="cap describe and embed at N memes each"
     )
-    index_parser.add_argument(
+    all_parser.add_argument(
         "--retry-failed",
         action="store_true",
         help="also re-pick rows with status=failed_describe",
     )
-    index_parser.set_defaults(run=run_index)
+    all_parser.add_argument(
+        "--regroup-only",
+        action="store_true",
+        help="skip ingest, only recompute perceptual duplicate groups",
+    )
+    all_parser.add_argument(
+        "--prune-missing",
+        action="store_true",
+        help="also remove missing or replaced paths outside image_dir; keep descriptions",
+    )
+    selection = all_parser.add_mutually_exclusive_group()
+    selection.add_argument(
+        "--path",
+        nargs="+",
+        metavar="FILE",
+        help="describe these files only; replaces existing descriptions for the same config",
+    )
+    selection.add_argument(
+        "--undescribed-only",
+        action="store_true",
+        help="only describe memes without any successful description",
+    )
+    all_parser.add_argument(
+        "--any-effort",
+        action="store_true",
+        help="skip descriptions under the same model and prompt at any effort level",
+    )
+    all_parser.add_argument(
+        "--model", help="override [describe].model for describing and embedding"
+    )
+    all_parser.add_argument("--effort", help="override [describe].effort_level")
+    all_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="print each description as it comes back",
+    )
+    all_parser.set_defaults(run=run_all)
 
     for name, module, help_text in STAGES:
         stage_parser = sub.add_parser(name, help=help_text, description=help_text)

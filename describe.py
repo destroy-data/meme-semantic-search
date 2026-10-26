@@ -908,6 +908,7 @@ def describe_memes(
             f"""
             SELECT m.hash, m.path FROM memes m
             WHERE m.perceptual_duplicate_of IS NULL
+              AND EXISTS (SELECT 1 FROM meme_files f WHERE f.hash = m.hash)
               {undescribed_filter}
               AND NOT EXISTS (
                   SELECT 1 FROM descriptions d

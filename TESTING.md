@@ -27,6 +27,10 @@ uv run memes.py scan --config config.test.toml
   w `meme_files`. Drugi skan zachowuje wszystkie ścieżki i ścieżkę główną.
 - [ ] Ustaw `image_dir` relatywnie, a potem sprawdź w SQLite, że każda wartość
   `memes.path` jest ścieżką bezwzględną.
+- [ ] Ustaw `exclude_paths` na jeden plik i jeden podkatalog względem `image_dir`.
+  Sprawdź, że oba są pominięte przez `scan` i `all`, a katalog o podobnej nazwie
+  nadal jest skanowany. Wcześniej zapisane ścieżki wykluczonych plików znikają
+  z `meme_files`. Ścieżki bezwzględne i zawierające `..` są odrzucane.
 - [ ] Uszkodzony obraz jest zgłoszony jako pominięty, ale nie przerywa skanu.
 - [ ] Drugi identyczny skan ma `0 new` i nie tworzy kolejnych rekordów.
 - [ ] W SQLite każda grupa podobnych obrazów ma dokładnie jednego
@@ -39,9 +43,14 @@ uv run memes.py scan --config config.test.toml
   zostaje główną, a hash, opisy i embedding pozostają. `--path` akceptuje
   również kopię, która nie jest główna. Po podmianie zawartości pliku jego
   wpis w `meme_files` wskazuje nowy hash, a stary mem korzysta z innej kopii.
-- [ ] Usuń wszystkie kopie pliku testowego i uruchom `scan --prune-missing`; jego rekord,
-  description, FTS i wektor znikają, a pozostała grupa jest ponownie poprawnie
-  zgrupowana.
+- [ ] Usuń wszystkie kopie pliku testowego i uruchom zwykły `scan`: ścieżki,
+  FTS i wektor znikają, ale `memes` i `descriptions` zostają. Ponowny skan nie
+  przywraca starych ścieżek, a `memes.path` jest pusty. `describe`, `embed`,
+  `search` i GUI pomijają archiwalny rekord; po przywróceniu identycznego pliku
+  jego opis jest używany ponownie, a embedding można odbudować. Pozostała grupa
+  jest poprawnie zgrupowana.
+- [ ] Przy `--prune-missing` sprawdź także nieistniejącą ścieżkę zapisaną poza
+  aktualnym `image_dir`; jej opis pozostaje w bazie.
 
 ## Opisy VLM
 
@@ -199,16 +208,20 @@ Usuwanie sprawdzaj wyłącznie na kopii kolekcji przygotowanej do weryfikacji.
   liczbę fizycznych plików. Usunięcie jednej kopii zachowuje opisy i indeksy
   wspólnego hasha, dopóki istnieje inna kopia.
 
-## Pełny przebieg i wznawianie
+## Pełny przebieg, osobne etapy i wznawianie
 
 ```sh
-uv run memes.py index --config config.test.toml --limit 10
+uv run memes.py all --config config.test.toml --limit 10
 ```
 
-- [ ] Pierwszy bieg wykonuje kolejno scan, describe i embed.
-- [ ] Przerwij `describe` po ukończeniu jednego obrazu, uruchom `index`
-  ponownie i sprawdź, że już zapisane opisy oraz embeddingi nie są robione od
-  nowa.
+- [ ] `all` wykonuje kolejno scan, describe i embed, a `scan`, `describe` i
+  `embed` osobno wykonują tylko własny etap.
+- [ ] `all` przyjmuje flagi etapów: `--regroup-only` i `--prune-missing` dla
+  skanowania, `--path` albo `--undescribed-only`, `--any-effort`, `--effort`
+  i `-v` dla opisywania, a `--model` i `--limit` dla opisywania oraz embeddingów.
+- [ ] Przerwij `describe` po ukończeniu jednego obrazu, uruchom `describe`
+  ponownie i sprawdź, że już zapisane opisy nie są robione od nowa. Powtórz
+  `embed` i sprawdź, że pomija istniejące embeddingi.
 - [ ] Na koniec wykonaj kilka zapisanych przykładowych zapytań z `AGENTS.md` i
   oceń wyniki ręcznie, zanim uruchomisz indeksowanie całej kolekcji.
 

@@ -4,7 +4,7 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS memes (
     hash                    TEXT    PRIMARY KEY,           -- sha256 hex of file contents
-    path                    TEXT    NOT NULL,              -- last known location on disk
+    path                    TEXT    NOT NULL,              -- active primary path; empty when archived
     phash                   TEXT    NOT NULL,              -- perceptual hash (hex), used for regrouping
     perceptual_duplicate_of TEXT    REFERENCES memes(hash) -- phash group representative; NULL = representative
 );
@@ -17,9 +17,6 @@ CREATE TABLE IF NOT EXISTS meme_files (
     hash TEXT NOT NULL REFERENCES memes(hash) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS meme_files_hash_idx ON meme_files(hash);
-
--- Preserve the known paths when upgrading an existing database.
-INSERT OR IGNORE INTO meme_files(path, hash) SELECT path, hash FROM memes;
 
 -- One row per describe attempt. A meme can have multiple rows (different models,
 -- prompt versions, or reasoning_effort settings). Uniqueness

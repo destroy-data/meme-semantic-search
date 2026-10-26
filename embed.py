@@ -66,6 +66,7 @@ def embed_descriptions(
             FROM memes m
             JOIN descriptions d ON d.hash = m.hash
             WHERE m.perceptual_duplicate_of IS NULL
+              AND EXISTS (SELECT 1 FROM meme_files f WHERE f.hash = m.hash)
               AND d.status = 'described'
               AND (:all_descriptions OR d.prompt_version = :prompt)
         )
