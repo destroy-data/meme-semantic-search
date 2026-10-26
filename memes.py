@@ -77,6 +77,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="only describe memes without any successful description",
     )
+    selection.add_argument(
+        "--undescribed-first",
+        action="store_true",
+        help="describe memes without any successful description before other eligible memes",
+    )
     all_parser.add_argument(
         "--any-effort",
         action="store_true",
