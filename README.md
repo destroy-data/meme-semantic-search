@@ -1,398 +1,260 @@
 # Meme Semantic Search
 
-Local semantic search over a personal meme collection. You type what you remember
-about a meme ("the one with the widening belt"), how the joke goes ("wordplay on
-a dead dad"), or loose keywords ("harry potter, little shits") — and get matching
-image files back. Everything runs locally: Ollama serves the models, SQLite is
-both the storage and the search index.
+Find a meme in your own collection by describing what you remember: the scene,
+the punchline, a quote, or a situation where you would use it. Queries can be in
+Polish or English, even when the text in the meme is in the other language.
+Results point to your original image files; the desktop GUI adds previews,
+collection browsing and duplicate management.
 
-## The core idea
+![Meme Semantic Search desktop GUI](screenshot.png)
 
-No CLIP. Images are never searched directly — a VLM writes a structured
-description of each meme once, at indexing time, and queries run against those
-descriptions. Two reasons:
+## How it works
 
-- Your query and the text baked into the image are routinely in different
-  languages. An image embedder has nothing to grab onto; a multilingual text
-  embedder does.
-- "Wordplay on a dead dad" describes how the meme *works*, not what it looks
-  like. Embedding models don't reason at query time, so that judgment has to be
-  made up front and written down. `the_clue` field carries most of the search quality.
+The project searches text descriptions of memes. At indexing time, a vision
+model reads each image and records its visible text, scene, recognizable template,
+keywords and an explanation of the joke. That explanation matters: “wordplay on
+a dead dad” describes how a meme works, which is hard to recover from visual
+similarity alone.
 
-Indexing is therefore slow and, on a cloud VLM, costs money — so raw VLM output
-is stored verbatim, and re-embedding never requires re-describing.
+Descriptions are then converted into embeddings: numerical representations used
+to compare their meaning with your query. Search combines this semantic matching
+with full-text search (FTS), which helps with quotes, names and exact words.
+There is no vision-model call for each search.
 
-## Setup
+1. **Descriptions can use a remote model.** Choose an OpenAI-compatible HTTP
+   service or an authenticated Claude Code, Codex or OpenCode CLI. A local vision
+   model through Ollama is also supported, but is optional. A CLI running on your
+   computer can still send images to a remote service; billing and usage limits
+   follow its provider and login method.
+2. **Embeddings and search stay local.** The intended setup uses Ollama with
+   multilingual `bge-m3` to embed both saved descriptions and search queries.
+   Metadata, saved descriptions and search indexes live in a local SQLite file.
+   After indexing, searching needs the local embedding service, without another
+   call to the description provider.
+3. **Expensive work is saved.** Describing a large collection can take hours and
+   cost money with a paid provider. Completed descriptions are kept, so a later
+   embedding run can reuse them without sending the images again. Normal repeat
+   runs skip completed work and fill gaps.
+4. **Duplicates share work.** Identical files share descriptions and an index.
+   Visually similar images are grouped, and only one representative per group
+   is described and included in search. You can still browse all scanned files
+   in the GUI. Similarity grouping is approximate and can group different memes.
 
-```fish
-uv sync
-ollama pull qwen3-vl:8b              # VLM; any vision model works
-ollama pull bge-m3                   # embeddings, 1024-dim, multilingual
-cp config.example.toml config.toml   # then set image_dir
+Search quality depends on the description: if the vision model misreads a quote
+or misses the joke, semantic search can miss it too. Animated images are described
+using selected frames, so not every moment of an animation is examined.
+
+## Getting started
+
+Run commands from the project directory. You need Python 3.12+, `uv`, and Ollama
+for local embeddings. Install `ffmpeg` on `PATH` to describe animated
+GIF/WebP/APNG files. CLI description backends additionally need their respective
+client installed and logged in.
+
+```sh
+uv sync --locked
+ollama pull bge-m3
+cp config.example.toml config.toml
 ```
 
-`[describe]` and `[embed]` each carry their own `base_url` / `api_key` / `model`,
-so describing can point at cloud while embedding
-stays local. Any OpenAI-compatible endpoint works. Alternatively,
-`backend = "claude-code-cli"` in `[describe]` runs the local `claude` CLI instead
-of an HTTP call, billed against a Claude Code subscription; when its usage limit
-runs out, `describe` waits and retries the same image rather than marking it
-failed.
+Make sure Ollama is running. Edit `config.toml` before indexing:
 
-Claude receives PNG images directly as base64 blocks on stdin, using
-`--input-format stream-json --output-format stream-json --verbose` in a temporary
-working directory. `--tools ""`, `--permission-mode dontAsk`, `--safe-mode` and
-strict MCP settings remove host tools and customizations. The only model tool
-is `StructuredOutput`, bound by `--json-schema`; it cannot read files, run shell
-commands or access the web. The final JSONL `result` supplies `structured_output`
-and usage as before. CLI 2.1.294 was checked against a local fake endpoint:
-both images arrived, and `StructuredOutput` was the only tool in the request.
-Python preserves source resolution on this path; Claude CLI may normalize
-images itself before sending them. Existing descriptions are still skipped.
+1. Set `image_dir` to the folder containing your memes. Subdirectories are
+   scanned too.
+2. Set `db_path` to the SQLite file where the collection and its indexes will
+   be stored. It is created on the first scan.
+3. Configure `[describe]` using one of the options below. The example file
+   defaults to a local `qwen3-vl:8b`; that model is only needed if you keep the
+   local description setup (`ollama pull qwen3-vl:8b`).
+4. Keep `[embed]` pointing at local Ollama:
 
-Animated GIF/WebP/APNG files share one frame-selection path across all describe
-backends. Install `ffmpeg` on PATH. Pillow decodes frames and their durations;
-FFmpeg detects cuts with `scene > 0.15`. Each shot contributes its middle frame;
-without cuts, the middle and last frames are sent. Repeated selections of the
-same frame are collapsed. Selected PNGs retain native resolution and are sent
-in chronological order with timestamps (HTTP image URLs, Claude inline images,
-Codex/OpenCode image attachments). Temporary files are removed after the request.
-No model is asked to extract animation frames. Extraction errors become
-per-image failures; existing descriptions are still skipped. Use a new prompt
-version when comparing the new inputs with older first-frame descriptions.
+```toml
+[embed]
+base_url = "http://localhost:11434/v1"
+api_key = "ollama"
+model = "bge-m3"
+```
 
-### Describe through Codex CLI
+Keep the database as well as your images when backing up the collection: it
+contains the descriptions you have already generated. Configuration files can
+contain provider credentials; keep those private.
 
-In a copy of your TOML, replace `[describe]` with:
+### Choosing a description backend
+
+`[describe]` is independent of `[embed]`. Changing the description provider
+does not require moving embeddings or search to that provider.
+
+For an **OpenAI-compatible HTTP service**, set its URL, credentials and a
+vision-capable model in `[describe]`. The service must support structured JSON
+output using `response_format: json_schema`.
+
+```toml
+[describe]
+backend = "openai"
+base_url = "https://your-provider.example/v1"
+api_key = "YOUR_API_KEY"
+model = "YOUR_VISION_MODEL"
+prompt_version = "vcodex1-master"
+```
+
+Replace the placeholder URL, key and model with your provider's values. Add
+`effort_level` only if the model supports it. For local Ollama descriptions, use
+the connection and model from `config.example.toml` instead.
+
+For a **CLI backend**, select the client and a vision-capable model available
+through your account. For example, a Codex description section is:
 
 ```toml
 [describe]
 backend = "codex-cli"
-model = "gpt-5.4" # use a vision-capable model available to your Codex account
-prompt_version = "vcodex1-master" # prompts/vcodex1-master.txt
-effort_level = "low" # optional; supported values depend on the model
+model = "YOUR_VISION_MODEL"
+prompt_version = "vcodex1-master"
+# effort_level = "low" # optional; depends on the model
 ```
 
-Run `uv run memes.py describe --config config.codex.toml --limit 1 -v`.
-Requires a logged-in `codex` on PATH and the flags available in CLI 0.162.0
-(the version used for implementation). It uses existing CLI authentication;
-`base_url` and `api_key` from the meme config are unused. Model and effort
-CLI overrides work as before. Billing follows the CLI's login method.
+| Backend | What to configure |
+|---|---|
+| `claude-code-cli` | A model available through your logged-in `claude` client. |
+| `codex-cli` | A model available through your logged-in `codex` client. Optional `codex_profile` imports provider connection settings and model/effort defaults from a profile file; see `config.deepseek.toml`. |
+| `opencode-cli` | OpenCode V2 and a model in `provider/model` form. Optional `effort_level` selects a variant; do not also put a variant in `model`. |
 
-Each still is attached as PNG (max side 1440); animations attach the selected
-frames at native resolution. `prompts/<prompt_version>.txt` is copied verbatim
-to a temporary instructions file and passed via `model_instructions_file`,
-replacing Codex's built-in main instructions. Stdin carries only the request to
-describe the meme and, for animations, the frame order and timestamps.
-The output schema and final-response file are separate temporary files. Runs use
-a temporary working directory, read-only sandbox, no user config/rules or
-AGENTS.md, and disable shell, web search, hooks, apps, plugins, host skill
-discovery, agents, goals, browser/computer use, image generation, local-image
-reading and question/plan tools. Images are attached by the CLI itself; the
-model has no tools for accessing files or running commands. CLI 0.164.0 was
-checked against a local fake endpoint: the request contained `tools: []` and
-the attached images, and the structured description was returned successfully.
-Managed policy and additional environment/tool instructions can still apply.
-Session logging is enabled for auditing; these flags restrict the model's
-tools, not the CLI process's own authentication, logging or network requests.
-With `-v`, the per-meme header also shows `[N tokens]` from Codex's completed
-turn: input plus output tokens, including cached input once. If usage is absent,
-the token count is omitted. Reported usage is stored in `descriptions.total_tokens`
-for all backends (input plus output, counting cached input once); unknown
-usage is `NULL`. `descriptions.usage_json` preserves the backend's full usage
-object, including input/output, cache and reasoning counts when reported, without
-renaming or dropping fields. Existing databases gain both columns automatically
-on connection, with older descriptions left as `NULL`.
-
-Codex requires `additionalProperties: false`; the temporary schema adds it and
-omits unsupported `uniqueItems`, which is checked locally instead. The canonical
-schema and prompt version are unchanged. Raw final JSON is stored verbatim.
-
-A Codex process failure or missing completed response stops the run
-**without writing a description row**. Re-run after resolving the error; no
-`--retry-failed` is needed for that image. Unlike Claude, Codex quota failures
-are not automatically slept/retried: JSONL errors do not provide a verified
-stable quota discriminator here. Timeouts, invalid completed descriptions and
-unreadable images become `failed_describe` and the queue continues; use
-`--retry-failed` to retry them. Both CLIs share timeout/Ctrl+C handling.
-The backend is not part of the existing DB uniqueness key; equal
-`(model, prompt_version, effort_level)` tuples still share one row.
-
-CLI protocol reference: [OpenAI non-interactive mode](https://developers.openai.com/codex/noninteractive).
-Instructions setting: [OpenAI configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
-
-### DeepSeek through a Codex profile
-
-`config.deepseek.toml` sets `codex_profile = "~/.codex/deepseek.config.toml"`.
-`common.load_config` imports only the model/effort defaults and selected
-provider's inert connection settings. The provider definition may come from
-that file or its sibling `config.toml`. Explicit `[describe]` values and CLI
-`--model` / `--effort` override profile defaults; embed sees the same resolved
-model/effort. Permissions, instructions, hooks, plugins and tools from those
-files are not imported. Command-backed provider helpers are rejected.
-Literal bearer tokens and HTTP-header values are passed through child-process
-environment variables, never CLI arguments. CLI user config stays disabled.
+CLI backends use their own authentication; `[describe].base_url` and `api_key`
+are unused. The adapters restrict model tools and send the prepared images and
+description instructions. Check one image before starting a full collection:
 
 ```sh
-uv run memes.py describe --config config.deepseek.toml --limit 1 -v
-uv run memes.py describe --config config.deepseek.toml --limit 1 --effort low -v
+uv run memes.py index --limit 1
+uv run memes.py gui
 ```
 
-Verified with the configured `deepseek/deepseek-v4.1-flash` OpenRouter provider:
-one real image was described and committed using profile effort `high`.
-A local wire test with the actual CLI also verified model/effort, authentication,
-PNG attachment, JSON schema and `tools: []`.
+`--limit 1` still scans the entire folder, then processes at most one description
+and one embedding independently. Inspect the result in the GUI. To print a
+description while generating it, run `uv run memes.py describe --limit 1 -v`;
+already completed descriptions are skipped.
 
-`codex.deepseek-models.json` supplies model metadata for interactive Codex's
-effort picker. It advertises OpenRouter's `none`, `low`, `high`, `max` options
-and preserves the installed CLI's default instructions for this model.
-Point `model_catalog_json` in the native DeepSeek profile at its absolute path
-and restart `codex --profile deepseek` to use it. The describe adapter does not
-import that catalog: it retains its explicit meme instructions and restrictions.
-The catalog was checked against Codex 0.164.0; revalidate after CLI updates.
+## Indexing and searching
 
-### Describe through OpenCode CLI
-
-Use `config.opencode.toml` with `backend = "opencode-cli"` and a vision-capable
-`model = "provider/model"` available through your OpenCode login. Optional
-`effort_level` selects an OpenCode `#variant`; omit it when unsupported. Do not
-set both `effort_level` and a variant in `model`. `base_url` and `api_key` are
-unused. Requires OpenCode V2 (checked against 2.1.3).
+Build or update the collection with:
 
 ```sh
-uv run memes.py describe --config config.opencode.toml --limit 1 -v
+uv run memes.py index
 ```
 
-Each call uses `opencode run --standalone --format json` with a dedicated agent,
-temporary `cwd`/`PWD`, `OPENCODE_CONFIG_DIR` and `XDG_CONFIG_HOME`. Inherited
-`OPENCODE_CONFIG` and CLI inline settings are cleared; the adapter does not use
-`~/.config/opencode`. Source images are prepared
-as PNG attachments, just as for Codex. All model actions are denied by agent
-permissions and a `tool.use` policy. MCP, skills, external plugins and project
-configuration are disabled. Only built-in agent/provider/image/policy/catalog modules
-and provider authentication/routing remain enabled. The versioned prompt is the
-agent's system prompt; the request includes the canonical description schema.
-Returned JSON is validated locally, including tags, enums and extra fields.
+This scans files, groups duplicates, generates missing descriptions, then embeds
+them. Run it again after adding images. Completed work is saved incrementally,
+so an interrupted run can be resumed by running the same command.
 
-OpenCode 2.1.3 was checked with a local fake provider: `tools: []`, both selected
-images, correct JSON and no source paths in the model request. The CLI still
-reads its own authentication, attaches the chosen images and writes session
-data. These model restrictions are not an OS sandbox for the CLI process.
-Machine-managed settings or policy may still apply. Global custom provider
-definitions are not loaded; this adapter uses OpenCode's built-in provider
-catalog and saved credentials.
+Search from the terminal or open the GUI:
 
-Process errors, quota/auth errors, unexpected tool calls and missing output
-stop the run without a row, so rerunning resumes. Timeouts, invalid descriptions
-and unreadable images are per-image failures retried with `--retry-failed`.
-There is no automatic quota wait for OpenCode. Raw `step_finish.tokens` are
-stored as usage when present; only an explicit native `total` is counted.
-OpenCode's text-only catch-up output has no usage, so it remains `NULL`.
-
-The free `opencode/*-free` gateway can reject agents with disabled tools, even
-when the same model works in normal OpenCode. A `provider.free-limit` error
-does not by itself prove exhausted quota. See the upstream reports
-[shell/read denial](https://github.com/anomalyco/opencode/issues/51241) and
-[restricted toolsets](https://github.com/anomalyco/opencode/issues/54744).
-Live checks on 2.1.3 reproduced the rejection with this adapter, a built-in
-`build` agent and native agent/identity modules, all with tools disabled.
-The adapter keeps its restrictions and stops without marking the meme as done.
-Local fake-provider tests verify transport and isolation; they do not establish
-eligibility for the remote free service.
-
-References: [OpenCode CLI](https://opencode.ai/v2/docs/cli/commands/),
-[permissions](https://opencode.ai/v2/docs/permissions/),
-[policies](https://opencode.ai/v2/docs/policies/).
-
-## Usage
-
-```fish
-uv run memes.py index                         # scan -> describe -> embed
-uv run memes.py search "widening the belt"    # top matches, one path per line
-uv run memes.py search "harry potter" --show  # open in an image viewer
-uv run memes.py gui                           # browse with previews
+```sh
+uv run memes.py search "mem z poszerzaniem paska"
+uv run memes.py search "harry potter" --show
+uv run memes.py gui
 ```
 
-`index` is incremental and resumable — re-run it after adding memes and only new
-work happens. The first full run takes hours; killing it loses at most one image.
+CLI search prints one matching path per line. `-n` / `--top` changes the number
+of results. `--show` opens them in an installed viewer (`imv`, `feh`, `nsxiv` or
+`loupe`). Try describing the punchline or intended reaction when a literal scene
+description does not find the meme.
 
-| command | flags |
+Every command accepts `--config FILE` after its name; the default is
+`config.toml`. For example:
+
+```sh
+uv run memes.py index --config config.test.toml --limit 1
+uv run memes.py search --config config.test.toml "widening the belt"
+```
+
+## Using the desktop GUI
+
+1. **Szukaj** searches as you type and previews the selected result. The
+   **FTS / Embeddingi** slider balances exact words against semantic similarity;
+   it starts with equal weights. Fully left uses only full-text search and does
+   not need the embedding service. Fully right uses only embeddings.
+2. **Lista** browses all scanned physical files, including those without a
+   description or embedding. Its text field filters filenames and paths locally.
+   Filters include **Wszystkie**, **Duplikaty**, **Identyczne kopie**,
+   **Nieopisane** and **Błędy**. Description states refer to the active
+   model/prompt/effort settings; the separate “w indeksie” marker indicates an
+   existing search vector, possibly from another description variant.
+3. **Preview and descriptions.** Select a file to view it and inspect its saved
+   description variants. You can copy the image or its path and open it in an
+   external viewer. F1 shows keyboard shortcuts. Switching between Szukaj and
+   Lista preserves their queries and selections.
+4. **Duplicates.** Use **Grupa duplikatów** for visually similar images or
+   **Identyczne kopie** for files with identical contents. Selecting a path
+   previews that physical file; copying and opening then use that copy.
+   **Wróć do wyniku** returns to the result, and Esc closes the duplicate list.
+5. **Embeduj opisane** in Lista fills missing search indexes in the background
+   for the whole collection, regardless of filters or checked files. It uses
+   each representative's newest successful description across all models,
+   prompts and effort levels. Existing vectors are skipped. Progress and failures
+   are shown; clicking again retries missing embeddings.
+6. **Deleting files.** Select checkboxes in Lista and use **Usuń zaznaczone
+   pliki**, or right-click a file for **Usuń plik** / **Usuń resztę z grupy**.
+   The latter keeps the clicked file. Deletion is permanent and requires
+   confirmation. The application checks file contents immediately before
+   deleting; replaced files and filesystem failures are reported. Removing one
+   identical copy preserves shared descriptions while another copy remains.
+   Deletion is blocked during background embedding.
+
+Scanning and describing are run from the CLI. Restart the GUI after a CLI scan
+or indexing run to reload collection data. Background embedding from the GUI
+refreshes its table and search results automatically. Browsing Lista and previews
+works without Ollama; semantic search and embedding need it running.
+
+## Updating and troubleshooting the collection
+
+| Task | Command or setting |
 |---|---|
-| `index` | `--limit N`, `--retry-failed` |
-| `scan` | `--regroup-only`, `--prune-missing` |
-| `describe` | `--limit N`, `--retry-failed`, `--any-effort`, `--undescribed-only`, `--model M`, `--effort E`, `--path FILE...`, `-v` |
-| `embed` | `--limit N`, `--model M` |
-| `search` | `QUERY...`, `-n/--top N`, `--show` |
-| `gui` | — |
+| Discover files without calling models | `uv run memes.py scan` |
+| Generate missing descriptions and print them | `uv run memes.py describe -v` |
+| Retry recorded description failures | `uv run memes.py describe --retry-failed` |
+| Describe only memes with no successful description under any settings | `uv run memes.py describe --undescribed-only` |
+| Generate missing embeddings from saved descriptions | `uv run memes.py embed` |
+| Retry descriptions and continue through embedding | `uv run memes.py index --retry-failed` |
+| Recompute similarity groups from stored hashes | Change `phash_threshold`, then run `uv run memes.py scan --regroup-only` |
+| Remove database records for files no longer present | `uv run memes.py scan --prune-missing` |
 
-All take `--config` (default `config.toml`). Every stage also runs standalone:
-`uv run describe.py --limit 10`. `--model` on `embed` picks *whose descriptions
-get embedded*, not the embedding model.
+`describe --undescribed-only` still needs `--retry-failed` for a failed attempt
+under the active settings. Description, embedding and full-index commands accept
+`--limit N`; it limits the work in that run, not the scanned collection.
 
-`describe --undescribed-only` skips memes with any successful description,
-regardless of model, prompt or effort. Failed attempts under the selected config
-still require `--retry-failed`. This flag cannot be combined with `--path`.
+Descriptions are stored separately by model, `prompt_version` and
+`effort_level`. Changing those settings normally adds another variant while
+preserving earlier descriptions. `prompt_version` selects a file in `prompts/`.
+`describe --any-effort` skips memes already described by the same model and
+prompt at any effort level. `describe --path FILE...` explicitly re-describes
+chosen scanned files and replaces their description for the active settings;
+it bypasses normal queue and duplicate skipping and cannot be combined with
+`--undescribed-only`.
 
-## The pipeline
+CLI `embed` selects descriptions within the active prompt version, preferring
+the configured model and effort, then the same model at another effort, then
+another model. Its `--model` flag chooses whose descriptions to embed; the
+embedding model itself is configured in `[embed]`. The GUI's **Embeduj opisane**
+instead uses the newest successful description across all configurations.
 
-**`scan`** walks `image_dir`, keys each file by sha256 and stores a perceptual
-hash. Then it groups near-duplicates (phash Hamming distance ≤
-`phash_threshold`): one representative per group stays searchable, the rest drop
-out of every downstream query. Regrouping only reads stored hashes, so
-`scan --regroup-only` after changing the threshold is cheap.
+**Changing description settings does not replace existing embeddings.** There
+is one vector per meme; embedding runs fill missing entries. To rebuild search
+from another description variant, back up the database, clear `memes_vec` and
+`memes_fts`, then run `embed` with the chosen configuration. Saved descriptions
+can be reused. Keep `bge-m3` for both indexing and queries: changing the embedding
+model requires rebuilding the index, and the current schema expects 1024 dimensions.
 
-**`describe`** sends each representative to the VLM and stores JSON enforced by
-`response_format: json_schema`:
+Individual unreadable images, invalid descriptions and timeouts are recorded as
+description failures; use `--retry-failed` after resolving the cause. Codex and
+OpenCode process, authentication or quota errors stop the run without recording
+a description for the current image, so a normal rerun resumes it. Claude's
+recognized usage-limit errors wait and retry automatically. Some free OpenCode
+gateways can reject the adapter's restricted tool setup even when the model
+works in a normal client session.
 
-| field | what it holds |
-|---|---|
-| `transcription` | all visible text, verbatim |
-| `template` | meme template name, if recognizable |
-| `scene` | what is visually happening |
-| `the_clue` | 2–3 sentences: the trigger and how the punchline works |
-| `keywords` | 3–16 tags, each concept in both Polish and English |
-| `humor_type` | 1–3 values from a closed enum (`irony`, `dark`, `wordplay`, …) |
+If a similar image seems missing from search, check its duplicate group in Lista.
+Groups can contain false positives; lower `phash_threshold` and regroup to make
+matching stricter. Scanning and grouping do not delete image files.
 
-`humor_type` is an enum because free text drifts ("ironic" / "with irony" /
-"sarcastic-ironic") and dilutes the signal. Failures are recorded as
-`failed_describe` rows rather than killing the run.
-
-The schema lives in `description_schema.json`. `--path` re-describes specific
-files regardless of what is already recorded, which is the quick loop for
-iterating on a prompt.
-
-**`embed`** joins `template` + `scene` + `the_clue` + `transcription` + tags
-into one text, embeds it with bge-m3, and fills `memes_vec` plus the FTS index.
-It takes the description matching `[describe]` and, failing that, falls back to
-the same model at another effort level, then to any model with the same prompt.
-
-**`search`** embeds the query, runs a KNN over the vectors and an FTS5 `MATCH`,
-then fuses the two rankings with weighted Reciprocal Rank Fusion
-(`Σ weight/(60 + rank)`). Equal weights preserve the original ranking. The
-vector side handles paraphrase; FTS catches exact strings and proper nouns the
-embedder blurs. RRF needs no score calibration between them, which is the point.
-
-## The database
-
-One SQLite file is queue, metadata store and search index. DDL in `schema.sql`.
-
-- **`memes`** — `hash` (sha256, PK), `path`, `phash`, `perceptual_duplicate_of`
-- **`meme_files`** — every scanned physical path, linked to its content hash;
-  identical copies share a `memes` row and its descriptions/embedding
-- **`descriptions`** — one row per describe *attempt*, unique on
-  `(hash, model, prompt_version, effort_level)`
-- **`memes_fts`** — FTS5, `remove_diacritics 2`
-- **`memes_vec`** — sqlite-vec `vec0`, one 1024-dim embedding per meme
-
-A meme's pipeline position is derived, not stored: *scanned* = no `descriptions`
-row for the active config, *described* / *failed* = a row with that status,
-*embedded* = a row in `memes_vec`.
-
-Because `descriptions` keys on the full config tuple, model and prompt variants
-accumulate side by side instead of overwriting each other. That's what makes
-comparing two models a plain `GROUP BY`, and what the GUI's variant dropdown
-reads.
-
-## Code layout
-
-```
-memes.py    aggregate CLI: index + the individual stages
-common.py   config loading, DB connection, query embedding
-scan.py  describe.py  embed.py  search.py    stages 1-4
-gui.py      Dear PyGui frontend over search()
-schema.sql  DDL        prompts/  versioned prompt files
-```
-
-Each stage module exposes `add_arguments(parser)` / `run(args, cfg)` /
-`main(argv=None)`, so `memes.py <stage>` and running the module directly share
-one implementation. After editing: `ruff format . && ruff check .`
-
-## GUI scope
-
-The top row has a **FTS / Embeddingi** balance slider between the search field
-and the **Szukaj / Lista** switch. It starts at 50% embeddings / 50% FTS. Move
-left for exact text matching, right for semantic similarity; the endpoints use
-only FTS or only embeddings. Results refresh after a short debounce. The slider
-is hidden in Lista and retains its setting when switching modes. CLI search
-continues to use equal weights.
-**Szukaj** performs semantic search; **Lista** browses all scanned physical
-files, including memes without descriptions or embeddings. Its query field
-filters names and paths locally (case-insensitive, no model calls).
-
-The collection table shows name, folder relative to `image_dir`, number of
-identical copies (including the displayed file), and indexing state. Clicking a
-row previews it; checkboxes independently select physical paths for future bulk
-operations. Switching modes preserves each query, preview, selection and scroll,
-as well as the collection filter and expanded groups. Status and F1 stay visible.
-
-Filters: **Wszystkie**, **Duplikaty** (expandable perceptual groups with at least
-two available physical files, including groups made only of identical copies),
-**Identyczne kopie**, **Nieopisane**, **Błędy**. Description states refer to the
-active `(model, prompt_version, effort_level)`; an additional “w indeksie” marker
-means a vector exists, which may come from a different description variant.
-“Nieopisane” means no attempt for the active config, “Błędy” means a failed attempt.
-Group sizes count available physical files before the path filter is applied.
-Collection data is loaded on first entering Lista; restart the GUI after a CLI
-scan or indexing run to reload it.
-
-In **Lista**, **Embeduj opisane** fills missing vector and FTS indexes across the
-whole collection, regardless of prompt, model, filters or checked files. For each
-representative, it uses the newest successful description across all prompts,
-models and effort levels, without preferring the active configuration. Existing vectors
-are skipped. Embedding runs in the background with progress and failure counts;
-the table and search refresh after completion. Deletion is temporarily blocked
-while it runs. Failed items can be retried with the same button.
-
-The current GUI searches as you type, previews selected images, lets you inspect
-description variants, and supports keyboard navigation, copying an image or its
-path, and opening it in an external viewer.
-
-The GUI also displays the path below the image, relative to `image_dir`.
-From the selected meme, use **Grupa duplikatów** to browse its perceptual group
-(including physical copies), or **Identyczne kopie** for files with exactly the
-same content. Lists open in the main window’s left panel and identify the representative and primary copies. Click a
-path to preview that file; descriptions, copying and opening then use the
-previewed file. **Wróć do wyniku** returns to the selected search result. Esc
-closes the list. Missing or replaced files are hidden with a count.
-
-Legacy databases can still show perceptual groups from `memes`; run scan to
-populate `meme_files` and discover all identical copies.
-
-Use checkboxes and **Usuń zaznaczone pliki** in Lista or its duplicate
-views to delete physical files. Search mode has no deletion controls.
-The right-click menu on a file in Lista offers **Usuń plik**
-and **Usuń resztę z grupy**. The latter keeps the clicked physical file and lists
-all other available group members, including identical copies, for confirmation.
-Deletion is permanent and requires confirmation. Immediately before deletion,
-the file's SHA-256 must match the database; replaced files and filesystem failures
-are reported and retain their records. Successful deletions update the database,
-visible results and groups. Moving, renaming, scanning and describing from the
-GUI remain deferred.
-
-Deletion of a representative selects a new one from the remaining group using the
-existing grouping rules, preserving surviving descriptions and embeddings.
-If no surviving member has a vector, deletion transfers the removed member's
-vector and FTS text to an available survivor, preserving group searchability
-without inference. This inherited index describes the similar removed image;
-description rows are not copied and existing survivor indexes are preserved.
-
-Groups refer to perceptually similar images and can include false positives.
-Identical copies share one metadata row but keep every scanned path in
-`meme_files`. The first discovered copy remains the primary path for describing
-and search; scanning switches to the first matching copy ordered by path only
-when the primary disappears or changes content. `describe --path` accepts any
-recorded copy. Re-scan an existing collection to discover copies whose paths
-were previously overwritten. Pruning removes shared metadata only when no copy
-remains. GUI groups include identical copies and count physical files. GUI
-deletion of one copy preserves shared work while another remains. Indexing
-remains in the CLI; tagging, image editing, folder
-watching and a web UI are outside this extension.
-
-## Gotchas
-
-- **Switching description variants doesn't clear old vectors.** `memes_vec` holds
-  one embedding per meme, so `DELETE FROM memes_vec; DELETE FROM memes_fts;`
-  before re-running `embed`.
-- **The describe timeout covers the whole generation**, since the response isn't
-  streamed — 276 s in `describe.py`, against 69 s for embeddings. Raise it if
-  `The read operation timed out` starts piling up in `descriptions.error`.
+For development details, see [AGENTS.md](AGENTS.md), the
+[manual verification guide](TESTING.md), and
+[architecture notes](ARCHITECTURE.md). The architecture document includes
+historical assumptions; use the current configuration and code for exact behavior.
