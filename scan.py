@@ -2,9 +2,11 @@
 
 import argparse
 import hashlib
+import os
 import sqlite3
 import sys
 from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
 
 import imagehash
@@ -21,17 +23,39 @@ RANK_DESCRIBED = 1
 RANK_NONE = 0
 
 
-def ingest(con: sqlite3.Connection, image_dir: Path) -> None:
+def excluded_relative_paths(paths: list[str]) -> set[Path]:
+    """Validate paths to omit, relative to the configured image directory."""
+    if not isinstance(paths, list):
+        raise TypeError("exclude_paths must be a list of relative paths")
+    excluded = set()
+    for value in paths:
+        if not isinstance(value, str):
+            raise TypeError("exclude_paths must contain relative path strings")
+        if not value:
+            raise ValueError("exclude_paths must contain non-empty relative paths")
+        path = Path(value)
+        if path.is_absolute() or path == Path(".") or ".." in path.parts:
+            raise ValueError(f"exclude_paths must stay within image_dir: {value!r}")
+        excluded.add(path)
+    return excluded
+
+
+def ingest(
+    con: sqlite3.Connection, image_dir: Path, exclude_paths: list[str] | None = None
+) -> None:
     # Store one canonical form regardless of whether image_dir in the TOML was
     # relative. `describe --path` resolves its argument too, so this also makes
     # targeted re-description reliable.
     image_dir = image_dir.expanduser().resolve()
+    if not image_dir.is_dir():
+        raise NotADirectoryError(f"image_dir is not a directory: {image_dir}")
+    excluded = excluded_relative_paths(
+        exclude_paths if exclude_paths is not None else []
+    )
     known = {h for (h,) in con.execute("SELECT hash FROM memes")}
     scanned: dict[str, str] = {}
     seen = new = errors = 0
-    for file in sorted(image_dir.rglob("*")):
-        if not file.is_file() or file.suffix.lower() not in EXTENSIONS:
-            continue
+    for file in image_files(image_dir, excluded):
         seen += 1
         digest = hashlib.sha256(file.read_bytes()).hexdigest()
         scanned[str(file)] = digest
@@ -65,11 +89,39 @@ def ingest(con: sqlite3.Connection, image_dir: Path) -> None:
         new += 1
         if new % 69 == 0:  # Nice
             print(f"scanned {new} new / {seen} seen")
-    select_primary_paths(con, scanned)
+    stale = [
+        path
+        for path, digest in con.execute("SELECT path, hash FROM meme_files")
+        if Path(path).is_relative_to(image_dir) and scanned.get(path) != digest
+    ]
+    remove_stale_paths(con, stale, scanned)
     con.commit()
     print(
         f"ingest: {seen} files seen, {new} new, {seen - new - errors} already known, {errors} unreadable"
     )
+
+
+def image_files(image_dir: Path, excluded: set[Path]) -> Iterator[Path]:
+    """Walk the active tree, failing if a directory cannot be read."""
+
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
+    def is_excluded(path: Path) -> bool:
+        relative = path.relative_to(image_dir)
+        return any(relative == item or item in relative.parents for item in excluded)
+
+    for directory, names, files in os.walk(image_dir, onerror=raise_walk_error):
+        base = Path(directory)
+        names[:] = sorted(name for name in names if not is_excluded(base / name))
+        for name in sorted(files):
+            file = base / name
+            if (
+                not is_excluded(file)
+                and file.is_file()
+                and file.suffix.lower() in EXTENSIONS
+            ):
+                yield file
 
 
 def file_matches(path: str, digest: str, scanned: dict[str, str]) -> bool:
@@ -88,41 +140,56 @@ def select_primary_paths(
     """Keep the primary copy, falling back only when it no longer matches."""
     scanned = scanned if scanned is not None else {}
     for digest, primary in con.execute("SELECT hash, path FROM memes").fetchall():
-        if file_matches(primary, digest, scanned):
-            continue
         copies = con.execute(
             "SELECT path FROM meme_files WHERE hash = ? ORDER BY path", (digest,)
         ).fetchall()
+        if (primary,) in copies and file_matches(primary, digest, scanned):
+            continue
         for (path,) in copies:
             if file_matches(path, digest, scanned):
                 con.execute("UPDATE memes SET path = ? WHERE hash = ?", (path, digest))
                 break
 
 
-def prune_missing(con: sqlite3.Connection) -> None:
-    for path, digest in con.execute("SELECT path, hash FROM meme_files").fetchall():
-        if not file_matches(path, digest, {}):
-            con.execute("DELETE FROM meme_files WHERE path = ?", (path,))
-    select_primary_paths(con)
-    rows = con.execute("SELECT hash, path FROM memes").fetchall()
-    missing = [h for h, p in rows if not file_matches(p, h, {})]
-    if not missing:
-        con.commit()
-        print("prune: no missing files")
-        return
-    marks = ",".join("?" * len(missing))
-    # Null out FK references from other rows so DELETE doesn't violate the FK.
-    con.execute(
-        f"UPDATE memes SET perceptual_duplicate_of = NULL "
-        f"WHERE perceptual_duplicate_of IN ({marks})",
-        missing,
+def remove_stale_paths(
+    con: sqlite3.Connection, paths: list[str], scanned: dict[str, str] | None = None
+) -> None:
+    con.executemany(
+        "DELETE FROM meme_files WHERE path = ?", [(path,) for path in paths]
     )
-    con.execute(f"DELETE FROM descriptions WHERE hash IN ({marks})", missing)
-    con.execute(f"DELETE FROM memes_fts WHERE hash IN ({marks})", missing)
-    con.execute(f"DELETE FROM memes_vec WHERE hash IN ({marks})", missing)
-    con.execute(f"DELETE FROM memes WHERE hash IN ({marks})", missing)
+    inactive = [
+        digest
+        for (digest,) in con.execute(
+            "SELECT m.hash FROM memes m WHERE NOT EXISTS "
+            "(SELECT 1 FROM meme_files f WHERE f.hash = m.hash)"
+        )
+    ]
+    con.executemany("DELETE FROM memes_fts WHERE hash = ?", [(h,) for h in inactive])
+    con.executemany("DELETE FROM memes_vec WHERE hash = ?", [(h,) for h in inactive])
+    con.executemany(
+        "UPDATE memes SET path = '' WHERE hash = ?", [(h,) for h in inactive]
+    )
+    select_primary_paths(con, scanned)
+    if paths:
+        print(f"prune: removed {len(paths)} stale paths; kept descriptions")
+
+
+def prune_missing(con: sqlite3.Connection) -> None:
+    stale = []
+    for path, digest in con.execute("SELECT path, hash FROM meme_files"):
+        try:
+            with open(path, "rb") as file:
+                matches = hashlib.file_digest(file, "sha256").hexdigest() == digest
+        except (FileNotFoundError, IsADirectoryError):
+            matches = False
+        except OSError:
+            continue
+        if not matches:
+            stale.append(path)
+    remove_stale_paths(con, stale)
     con.commit()
-    print(f"prune: removed {len(missing)} rows with missing files")
+    if not stale:
+        print("prune: no missing files")
 
 
 def regroup(con: sqlite3.Connection, threshold: int) -> None:
@@ -135,6 +202,7 @@ def regroup(con: sqlite3.Connection, threshold: int) -> None:
             ELSE {RANK_NONE}
           END AS rank
         FROM memes m
+        WHERE EXISTS (SELECT 1 FROM meme_files f WHERE f.hash = m.hash)
         """
     ).fetchall()
     phashes = [int(phash, 16) for _, phash, _ in rows]
@@ -188,7 +256,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--prune-missing",
         action="store_true",
-        help="remove unavailable copies; delete memes only when no copy remains",
+        help="also remove missing or replaced paths outside image_dir; keep descriptions",
     )
 
 
@@ -196,7 +264,7 @@ def run(args: argparse.Namespace, cfg: dict) -> None:
     # Scan is the stage that creates the DB, so it's the one applying schema.sql.
     con = common.connect(cfg["db_path"], init_schema=True)
     if not args.regroup_only:
-        ingest(con, Path(cfg["image_dir"]).expanduser())
+        ingest(con, Path(cfg["image_dir"]).expanduser(), cfg.get("exclude_paths"))
     if args.prune_missing:
         prune_missing(con)
     regroup(con, cfg["phash_threshold"])

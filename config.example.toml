@@ -1,5 +1,7 @@
 db_path = "memes.db"
 image_dir = "<path>"
+# Paths relative to image_dir. A directory entry excludes all files beneath it.
+# exclude_paths = ["private", "drafts/unused.png"]
 phash_threshold = 8
 
 [describe]

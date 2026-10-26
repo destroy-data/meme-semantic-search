@@ -22,8 +22,8 @@ One module per stage at the repo root, named after the stage:
 - `search.py` — Stage 4 search (hybrid vec + FTS, RRF fusion); importable as `search()`
 - `gui.py` — Stage 5 Dear PyGui GUI wrapping stage 4 (extra dep: `dearpygui`)
 - `common.py` — shared plumbing: `load_config`, `connect`, `request_embedding`
-- `memes.py` — aggregate CLI: `uv run memes.py <stage> [flags]`, plus
-  `memes.py index` which runs scan→describe→embed in one process
+- `memes.py` — CLI: `uv run memes.py <stage> [flags]`; `all` runs
+  scan→describe→embed in order
 
 Every stage module exposes the same trio, which is what makes both entry points
 work off one implementation:
@@ -36,11 +36,10 @@ work off one implementation:
 imported lazily there so headless stages never pay for `dearpygui`.
 
 `schema.sql` is executed by `common.connect(..., init_schema=True)`, which the
-scan stage and `index` pass (idempotent `CREATE ... IF NOT EXISTS`); every other
-stage expects the schema to already exist. `index` calls the stage functions
-directly over a single shared connection and takes only the flags that make
-sense for a whole run (`--config`, `--limit`, `--retry-failed`) — maintenance
-flags like `--regroup-only` stay on the individual stages.
+scan stage and `all` pass (idempotent `CREATE ... IF NOT EXISTS`); every other
+stage expects the schema to already exist. `all` calls the `run` function of
+each stage in order and accepts their combined flags. Shared flags such as
+`--limit` and `--model` apply to both relevant stages.
 
 Two more data files at the root, easy to confuse: `schema.sql` is the SQLite
 DDL above, while `description_schema.json` is the JSON Schema for the VLM's
@@ -115,10 +114,12 @@ CREATE VIRTUAL TABLE memes_vec USING vec0(hash TEXT PRIMARY KEY, embedding float
 Status lives on `descriptions`, not on `memes`. A meme's pipeline position is
 derived, not stored:
 
-- **scanned** = row in `memes`, no row in `descriptions` yet (for the active
+- **scanned** = active row in `memes`, no row in `descriptions` yet (for the active
   config).
 - **described** = at least one `descriptions` row with `status='described'`.
 - **embedded** = row exists in `memes_vec` (and `memes_fts`).
+- **archived** = row in `memes` with no matching row in `meme_files` and an empty
+  `path`; descriptions remain, but vector and FTS entries are removed.
 - **failed_describe** = `descriptions` row with `status='failed_describe'` for
   the active config; `--retry-failed` re-picks these.
 
@@ -130,7 +131,7 @@ Ollama) and re-running `embed` re-picks any `described` row missing a
 
 - It's a similarity annotation recomputed from stored `phash` values, independent
   of any describe/embed work.
-- Every pipeline query and every search query filters
+- Every pipeline query and every search query filters for an active path and
   `perceptual_duplicate_of IS NULL`. Non-representatives keep their
   `descriptions` rows (invested work is preserved) but don't advance or appear
   in results, and re-enter automatically if they flip back to representative.
@@ -175,15 +176,20 @@ invocation:
    path is recorded in `meme_files(path PRIMARY KEY, hash REFERENCES memes(hash)
    ON DELETE CASCADE)`, including identical copies. A path whose content changes
    is reassigned to the new hash. Existing databases seed this table from
-   `memes.path`; another scan discovers the previously unrecorded copies.
-   Known content skips phash calculation and does not overwrite `memes.path`.
-   The first discovered copy becomes the primary path; keep it while its content
-   matches the hash. Otherwise select the first matching known copy ordered by
+   `memes.path` once when upgrading; another scan discovers the previously
+   unrecorded copies.
+   Known content skips phash calculation. The first discovered copy becomes the
+   primary path; keep it while it remains tracked and its content matches the
+   hash. Otherwise select the first matching known copy ordered by
    absolute path. All identical copies share one description per config and one
    embedding; normal describe uses the primary path, while `--path` accepts any
-   recorded copy. No `descriptions` rows are created here — a fresh mem is "scanned"
-   by virtue of having no matching `descriptions` row for the active config.
-2. **Regroup.** Recompute perceptual-duplicate groupings across **every** row
+   recorded copy. After the walk, paths under the configured `image_dir` that
+   were not seen or whose contents changed are removed from `meme_files`. If no
+   copy remains, vector and FTS entries are removed, while the `memes` row and
+   descriptions stay for reuse when the content reappears. No `descriptions`
+   rows are created here — a fresh mem is "scanned" by virtue of having no
+   matching `descriptions` row for the active config.
+2. **Regroup.** Recompute perceptual-duplicate groupings across **active** rows
    (not just newly inserted ones) using stored `phash` values: near-duplicates
    share a group when phash Hamming distance ≤ threshold (`phash_threshold` in
    the TOML, currently 8). Pick one representative per group (leave its
@@ -196,10 +202,10 @@ invocation:
    `descriptions` or `memes_vec` side is touched.
 
 Two useful flags: `--regroup-only` skips ingest and just re-runs the grouping
-pass (cheap; useful when tuning `phash_threshold`); `--prune-missing` removes missing or replaced physical copies from `meme_files`,
-selects another primary copy when available, and deletes a meme and its
-`descriptions`, `memes_fts`, and `memes_vec` only when no matching copy remains.
-Ingest runs before pruning so newly discovered surviving copies preserve work.
+pass (cheap; useful when tuning `phash_threshold`); `--prune-missing` also
+checks stored paths outside the current `image_dir` and removes missing or
+replaced copies. Ingest runs before pruning so newly discovered surviving copies
+preserve descriptions.
 
 No GPU needed. Since regroup only reads `phash`, tuning the threshold on the M1
 sample is cheap — re-run `scan --regroup-only`, look at the dedup stats, adjust.
@@ -565,7 +571,7 @@ genuinely needed, propose it first.
 
 - Run a stage: `uv run memes.py <stage> [--config config.toml] [stage-specific flags]`
   (or the module directly: `uv run scan.py --regroup-only`)
-- Full incremental pipeline: `uv run memes.py index` (scan → describe → embed)
+- Full incremental pipeline: `uv run memes.py all` (scan → describe → embed)
 - Search: `uv run memes.py search "your query" [-n 20] [--show]`
 - GUI: `uv run memes.py gui`
 - Lint/format after edits: `ruff format . && ruff check .`

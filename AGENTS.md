@@ -10,7 +10,7 @@ Root stages are `scan.py`, `describe.py`, `embed.py`, `search.py`, and `gui.py`.
 
 1. `uv sync --locked` — install dependencies without changing `uv.lock`; requires Python 3.12+ and includes Dear PyGui.
 2. Create `config.test.toml` from `config.example.toml`; set separate test database/image paths and backend settings.
-3. `uv run memes.py index --config config.test.toml --limit 1` — scan everything in the sample directory; cap describe and embed independently.
+3. `uv run memes.py all --config config.test.toml --limit 1` — scan everything in the sample directory; cap describe and embed independently.
 4. `uv run memes.py search --config config.test.toml "widening the belt"` — print matching paths.
 5. `uv run memes.py gui --config config.test.toml` — open the GUI.
 6. `ruff format .` followed by `ruff check .` — required after Python edits. Ruff must be available separately; `uv sync` does not install it.

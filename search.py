@@ -32,6 +32,7 @@ def vec_hits(con: sqlite3.Connection, vector: list[float]) -> list[str]:
         ) v
         JOIN memes m ON m.hash = v.hash
         WHERE m.perceptual_duplicate_of IS NULL
+          AND EXISTS (SELECT 1 FROM meme_files f WHERE f.hash = m.hash)
         ORDER BY v.distance
         """,
         (sqlite_vec.serialize_float32(vector), CANDIDATES),
@@ -48,6 +49,7 @@ def fts_hits(con: sqlite3.Connection, query: str) -> list[str]:
         SELECT f.hash FROM memes_fts f
         JOIN memes m ON m.hash = f.hash
         WHERE memes_fts MATCH ? AND m.perceptual_duplicate_of IS NULL
+          AND EXISTS (SELECT 1 FROM meme_files mf WHERE mf.hash = m.hash)
         ORDER BY rank LIMIT ?
         """,
         (match, CANDIDATES),

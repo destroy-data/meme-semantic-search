@@ -90,7 +90,16 @@ def connect(
     sqlite_vec.load(con)
     con.enable_load_extension(False)
     if init_schema:
+        # Seed legacy databases once; archived memes must not regain stale paths.
+        had_meme_files = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'meme_files'"
+        ).fetchone()
         con.executescript(Path(__file__).with_name("schema.sql").read_text())
+        if not had_meme_files:
+            con.execute(
+                "INSERT OR IGNORE INTO meme_files(path, hash) SELECT path, hash FROM memes"
+            )
+            con.commit()
     columns = {row[1] for row in con.execute("PRAGMA table_info(descriptions)")}
     added_columns = False
     for name, sql_type in (("total_tokens", "INTEGER"), ("usage_json", "TEXT")):

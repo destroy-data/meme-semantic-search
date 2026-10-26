@@ -177,9 +177,9 @@ FONT_CANDIDATES = [
 
 
 def indexed_files_sql(con: sqlite3.Connection) -> str:
-    """Include legacy databases until the next scan creates meme_files."""
+    """Use tracked paths only; old databases fall back until their first scan."""
     if con.execute("SELECT 1 FROM sqlite_master WHERE name = 'meme_files'").fetchone():
-        return "SELECT hash, path FROM meme_files UNION SELECT hash, path FROM memes"
+        return "SELECT hash, path FROM meme_files"
     return "SELECT hash, path FROM memes"
 
 
@@ -306,11 +306,15 @@ def delete_files(con, files, threshold):
     """Delete only confirmed paths whose SHA-256 still matches the database."""
     removed, errors = [], []
     # Upgrade legacy copy tracking without running scan or inference.
+    had_meme_files = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'meme_files'"
+    ).fetchone()
     con.execute(
         "CREATE TABLE IF NOT EXISTS meme_files (path TEXT PRIMARY KEY, "
         "hash TEXT NOT NULL REFERENCES memes(hash) ON DELETE CASCADE)"
     )
-    con.execute("INSERT OR IGNORE INTO meme_files SELECT path, hash FROM memes")
+    if not had_meme_files:
+        con.execute("INSERT OR IGNORE INTO meme_files SELECT path, hash FROM memes")
     con.commit()
     # Snapshot memberships: deleting a representative clears FK references,
     # but later deletions in this batch must still see the original group.
