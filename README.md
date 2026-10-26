@@ -1,5 +1,7 @@
 # Meme Semantic Search
 
+### WIP
+
 Find a meme in your own collection by describing what you remember: the scene,
 the punchline, a quote, or a situation where you would use it. Queries can be in
 Polish or English, even when the text in the meme is in the other language.
