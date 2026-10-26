@@ -160,8 +160,12 @@ uv run memes.py all
 stage separately. `scan` finds files and groups duplicates; `describe` generates
 missing descriptions; `embed` builds missing search indexes. Completed work is
 saved incrementally, so an interrupted run can be resumed with the same command.
+You can combine stages in the desired order, putting their flags after the stage
+names: `uv run memes.py scan embed --config config.test.toml --limit 1` scans
+files and embeds saved descriptions without generating new descriptions.
+Shared flags apply to every selected stage that accepts them.
 `all` accepts their flags: `--regroup-only` and `--prune-missing` affect scanning;
-`--path`, `--undescribed-only`, `--any-effort`, `--effort`, and `-v` affect
+`--path`, `--undescribed-only`, `--shuffle`, `--any-effort`, `--effort`, and `-v` affect
 describing. `--model` selects the model for describing and embedding, while
 `--limit` caps describing and embedding separately. `--path` selects descriptions
 to generate; embedding still processes all eligible descriptions.
@@ -203,25 +207,71 @@ uv run memes.py search --config config.test.toml "widening the belt"
 3. **Preview and descriptions.** Select a file to view it and inspect its saved
    description variants. You can copy the image or its path and open it in an
    external viewer. F1 shows keyboard shortcuts. Switching between Szukaj and
-   Lista preserves their queries and selections.
-4. **Duplicates.** Use **Grupa duplikatów** for visually similar images or
+   Lista preserves their queries and selections. Drag the vertical divider
+   between the list and preview to resize them in either mode, including
+   duplicate lists. Each mode remembers its width until the app closes;
+   F11 temporarily expands the preview to the full width.
+4. **Compare descriptions.** Open the **Porównanie** view beside **Szukaj** and
+   **Lista**, or use **Porównaj opisy** on a selected meme. Each column filters
+   model, prompt and reasoning effort independently. **Dowolny** accepts any
+   value; **Brak ustawienia** selects descriptions without an explicit effort,
+   separately from the explicit `none` level. Options come from successful
+   descriptions across the database. When several configurations match, a list
+   below the filters selects the actual variant; a single match is selected
+   automatically. This lets you compare one specific prompt against several
+   others. Matching fields line up and scroll together; click the shared
+   thumbnail to enlarge it. **Poprzedni mem / Następny mem** browse the search
+   results, filtered list or duplicate group used to open comparison. Parameter
+   filters keep only memes with at least one matching successful description
+   on each side. Broadening filters restores hidden memes in their original
+   order; an empty result keeps the controls available. Without
+   an existing selection, comparison starts with the collection. Missing
+   variants show a message instead of another description. Switching views
+   preserves comparison filters, variants, meme and scroll until the app closes.
+   **Opisz i embeduj ten mem** appears beside a missing variant. It describes
+   only that meme with the exact selected model, prompt and effort, using the
+   configured description backend. The saved description appears immediately,
+   before embedding finishes. Navigation remains available during processing.
+   While a task is running, **Dodaj do kolejki** schedules another missing
+   variant. Tasks run in click order, one at a time, each with its own captured
+   model, prompt, effort and backend/embedding settings. Later changes to filters
+   or selections do not alter queued tasks. The header shows the waiting count;
+   a queued variant shows its position. The same meme hash and variant can only
+   be queued once, including across identical copies. Tasks continue after
+   switching views; a failed task leaves a message and the next task starts.
+   The queue is kept for the current GUI session.
+   The embedding uses `[embed]` and updates this meme's shared search index from
+   that exact description, replacing any existing vector and FTS entry together.
+   An embedding failure shows a small message, preserves the saved description
+   and previous indexes, and is not retried.
+   **Wróć** or Esc restores the original view; Esc first closes an enlarged image.
+   **Kopiuj porównanie** copies a JSON object with `meme`, `left`, and `right`:
+   the relative image path, SHA-256 and dimensions, plus each selected variant's
+   model, prompt version, reasoning effort and complete description. Empty fields
+   and lists are preserved. The button requires two available descriptions.
+   **Kopiuj wszystkie pary** copies `{"comparisons": [...]}` for the current list,
+   in its displayed order, using exactly the two variants selected below the
+   parameter filters. Memes missing either selected variant or whose files have
+   changed or become unavailable are skipped; the status shows copied and
+   skipped counts. Export preserves the current preview and selections.
+5. **Duplicates.** Use **Grupa duplikatów** for visually similar images or
    **Identyczne kopie** for files with identical contents. Selecting a path
    previews that physical file; copying and opening then use that copy.
    **Wróć do wyniku** returns to the result, and Esc closes the duplicate list.
-5. **Embeduj opisane** in Lista fills missing search indexes in the background
+6. **Embeduj opisane** in Lista fills missing search indexes in the background
    for the whole collection, regardless of filters or checked files. It uses
    each representative's newest successful description across all models,
    prompts and effort levels. Existing vectors are skipped. Progress and failures
    are shown; clicking again retries missing embeddings.
-6. **Deleting files.** Select checkboxes in Lista and use **Usuń zaznaczone
+7. **Deleting files.** Select checkboxes in Lista and use **Usuń zaznaczone
    pliki**, or right-click a file for **Usuń plik** / **Usuń resztę z grupy**.
    The latter keeps the clicked file. Deletion is permanent and requires
    confirmation. The application checks file contents immediately before
    deleting; replaced files and filesystem failures are reported. Removing one
    identical copy preserves shared descriptions while another copy remains.
-   Deletion is blocked during background embedding.
+   Deletion is blocked during background describing or embedding.
 
-Scanning and describing are run from the CLI. Restart the GUI after a CLI scan
+Scanning and batch describing are run from the CLI. Restart the GUI after a CLI scan
 or indexing run to reload collection data. Background embedding from the GUI
 refreshes its table and search results automatically. Browsing Lista and previews
 works without Ollama; semantic search and embedding need it running.
@@ -249,7 +299,13 @@ Descriptions are stored separately by model, `prompt_version` and
 `effort_level`. Changing those settings normally adds another variant while
 preserving earlier descriptions. `prompt_version` selects a file in `prompts/`.
 `describe --any-effort` skips memes already described by the same model and
-prompt at any effort level. `describe --path FILE...` explicitly re-describes
+prompt at any effort level. `--shuffle` randomizes eligible descriptions before
+applying `--limit`, so each run can start with a different sample. With
+`--undescribed-first`, it randomizes within each priority group, keeping memes
+without any successful description first. It also shuffles explicit `--path`
+files, whose existing limit and replacement behavior stays unchanged. The flag
+works with `describe`, `all`, and combined stages such as `describe embed`.
+`describe --path FILE...` explicitly re-describes
 chosen scanned files and replaces their description for the active settings;
 it bypasses normal queue and duplicate skipping and cannot be combined with
 `--undescribed-only`.
@@ -261,7 +317,9 @@ embedding model itself is configured in `[embed]`. The GUI's **Embeduj opisane**
 instead uses the newest successful description across all configurations.
 
 **Changing description settings does not replace existing embeddings.** There
-is one vector per meme; embedding runs fill missing entries. To rebuild search
+is one vector per meme; batch embedding runs fill missing entries. The comparison
+view's **Opisz i embeduj ten mem** explicitly replaces that meme's search index
+with the newly generated variant. To rebuild search for the whole collection
 from another description variant, back up the database, clear `memes_vec` and
 `memes_fts`, then run `embed` with the chosen configuration. Saved descriptions
 can be reused. Keep `bge-m3` for both indexing and queries: changing the embedding

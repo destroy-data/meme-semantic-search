@@ -90,25 +90,7 @@ def embed_descriptions(
         progress(done, failed, len(rows))
     for digest, raw in rows:
         try:
-            desc = json.loads(raw)
-            vector = common.request_embedding(embed_cfg, embedding_text(desc))
-            # Per-row commit keeps fts + vec inserts atomic and the run resumable.
-            con.execute(
-                "INSERT INTO memes_vec (hash, embedding) VALUES (?, ?)",
-                (digest, sqlite_vec.serialize_float32(vector)),
-            )
-            con.execute("DELETE FROM memes_fts WHERE hash = ?", (digest,))
-            con.execute(
-                "INSERT INTO memes_fts (hash, transcription, keywords, template) "
-                "VALUES (?, ?, ?, ?)",
-                (
-                    digest,
-                    desc.get("transcription", ""),
-                    ", ".join(desc.get("keywords", []) + desc.get("humor_type", [])),
-                    desc.get("template", ""),
-                ),
-            )
-            con.commit()
+            embed_description(con, digest, raw, embed_cfg)
             done += 1
         # Logged and re-picked by the next run, so nothing here may stop the loop.
         except Exception as e:  # noqa: BLE001
@@ -123,6 +105,37 @@ def embed_descriptions(
         )
         if progress:
             progress(done, failed, len(rows))
+
+
+def embed_description(
+    con: sqlite3.Connection,
+    digest: str,
+    raw: str,
+    cfg: dict,
+    *,
+    replace: bool = False,
+) -> None:
+    """Index one exact description; preserve existing indexes on failure."""
+    desc = json.loads(raw)
+    vector = common.request_embedding(cfg, embedding_text(desc))
+    with con:
+        if replace:
+            con.execute("DELETE FROM memes_vec WHERE hash = ?", (digest,))
+        con.execute(
+            "INSERT INTO memes_vec (hash, embedding) VALUES (?, ?)",
+            (digest, sqlite_vec.serialize_float32(vector)),
+        )
+        con.execute("DELETE FROM memes_fts WHERE hash = ?", (digest,))
+        con.execute(
+            "INSERT INTO memes_fts (hash, transcription, keywords, template) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                digest,
+                desc.get("transcription", ""),
+                ", ".join(desc.get("keywords", []) + desc.get("humor_type", [])),
+                desc.get("template", ""),
+            ),
+        )
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
