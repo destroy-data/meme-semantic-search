@@ -6,6 +6,7 @@ import bisect
 import io
 import json
 import os
+import random
 import re
 import shutil
 import signal
@@ -848,6 +849,7 @@ def describe_memes(
     any_effort: bool = False,
     undescribed_only: bool = False,
     undescribed_first: bool = False,
+    shuffle: bool = False,
     verbose: bool = False,
     paths: list[str] | None = None,
 ) -> None:
@@ -887,18 +889,20 @@ def describe_memes(
         if undescribed_only
         else ""
     )
-    order_by = (
-        "EXISTS (SELECT 1 FROM descriptions prior "
-        "WHERE prior.hash = m.hash AND prior.status = 'described'), m.hash"
-        if undescribed_first
-        else "m.hash"
-    )
+    order_by = "RANDOM()" if shuffle else "m.hash"
+    if undescribed_first:
+        order_by = (
+            "EXISTS (SELECT 1 FROM descriptions prior "
+            "WHERE prior.hash = m.hash AND prior.status = 'described'), " + order_by
+        )
     if paths:
         # --path overrides the queue entirely, skip logic included: re-describing
         # one meme under an unchanged config is the whole point (prompt
         # iteration), and descriptions_config_idx turns the write into a replace
         # rather than a duplicate. Announce it so nothing is overwritten silently.
         rows = rows_for_paths(con, paths)
+        if shuffle:
+            random.shuffle(rows)
         for digest, path in rows:
             prior = con.execute(
                 "SELECT status FROM descriptions WHERE hash = ? AND model = ? "
@@ -1114,6 +1118,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "eligible memes; apply --limit after this ordering",
     )
     parser.add_argument(
+        "--shuffle",
+        action="store_true",
+        help="randomize description order before --limit; with --undescribed-first, "
+        "randomize within each priority group",
+    )
+    parser.add_argument(
         "--any-effort",
         action="store_true",
         help="skip memes already described with the same model+prompt at any effort_level",
@@ -1143,6 +1153,7 @@ def run(args: argparse.Namespace, cfg: dict) -> None:
         any_effort=args.any_effort,
         undescribed_only=args.undescribed_only,
         undescribed_first=args.undescribed_first,
+        shuffle=args.shuffle,
         verbose=args.verbose,
         paths=args.path,
     )

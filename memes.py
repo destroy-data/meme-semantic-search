@@ -1,10 +1,12 @@
-"""Aggregate CLI over every pipeline stage: `memes.py <stage> [flags]`.
+"""Aggregate CLI: `memes.py <stage> [<stage> ...] [flags]`.
 
-`all` runs scan, describe and embed in order. Other commands run only their
-selected stage. Stage modules also stay runnable on their own.
+Combine scan, describe and embed in the desired order, followed by their shared
+flags. `all` runs all three in order. Search and GUI run separately.
+Stage modules also stay runnable on their own.
 """
 
 import argparse
+import sys
 
 import common
 import describe
@@ -38,6 +40,28 @@ def run_gui(args: argparse.Namespace, cfg: dict) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    pipeline = {name: module for name, module, _ in STAGES[:3]}
+    selected: list[str] = []
+    for argument in argv:
+        if argument not in pipeline:
+            break
+        selected.append(argument)
+    if len(selected) > 1:
+        pipeline_parser = argparse.ArgumentParser(
+            prog=f"memes {' '.join(selected)}",
+            description="Run the selected stages in order, with shared flags.",
+            conflict_handler="resolve",
+        )
+        for name in dict.fromkeys(selected):
+            pipeline[name].add_arguments(pipeline_parser)
+        args = pipeline_parser.parse_args(argv[len(selected) :])
+        cfg = common.load_config(args.config)
+        for name in selected:
+            print(f"== {name} ==")
+            pipeline[name].run(args, cfg)
+        return
+
     parser = argparse.ArgumentParser(prog="memes", description=__doc__)
     sub = parser.add_subparsers(dest="stage", required=True)
 
@@ -81,6 +105,11 @@ def main(argv: list[str] | None = None) -> None:
         "--undescribed-first",
         action="store_true",
         help="describe memes without any successful description before other eligible memes",
+    )
+    all_parser.add_argument(
+        "--shuffle",
+        action="store_true",
+        help="randomize description order before --limit; preserve --undescribed-first priority",
     )
     all_parser.add_argument(
         "--any-effort",

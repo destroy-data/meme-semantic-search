@@ -64,6 +64,13 @@ uv run memes.py scan --config config.test.toml
 uv run memes.py describe --config config.test.toml --limit 10 -v
 ```
 
+1. [ ] `describe --shuffle --limit 1` losuje z całej kwalifikującej się kolejki
+   przed limitem. Zapisane opisy, nieponawiane błędy, brakujące pliki i duplikaty
+   są nadal pomijane według istniejących zasad. Bez flagi pozostaje kolejność
+   po hashu. `--undescribed-first --shuffle` losuje osobno w obu grupach,
+   zachowując pierwszeństwo memów bez udanego opisu. `--path ... --shuffle`
+   losuje podane pliki. Flaga działa też w `all` i `describe embed`.
+
 - [ ] Opis powstaje tylko dla reprezentantów grup podobnych obrazów.
 - [ ] Każdy zapisany JSON ma wszystkie pola ze `description_schema.json`, a
   `keywords` i `humor_type` spełniają limity oraz enum ze schematu.
@@ -171,6 +178,154 @@ uv run memes.py gui --config config.test.toml
   długim opisie, wielu wynikach, długim komunikacie statusu, zmianie rozmiaru
   okna i podglądzie na całą szerokość. Przewijają się tylko panele zawartości.
 
+1. [ ] W „Szukaj” i „Liście” przeciągnij pionową granicę między listą
+   a podglądem w obie strony, także poza okno. Oba panele zachowują minimalną
+   szerokość, obraz dopasowuje rozmiar, a opis zawija się bez restartu.
+2. [ ] Ustaw różne szerokości w obu trybach i przełącz je kilkukrotnie.
+   Każdy przywraca swoją szerokość, także po otwarciu i zamknięciu duplikatów
+   lub identycznych kopii. F11 ukrywa listę i separator; ponowne F11 przywraca
+   poprzedni podział, również w otwartej grupie.
+3. [ ] Zmniejsz i powiększ okno po rozsunięciu paneli. Podgląd i stopka
+   pozostają w oknie, a po powiększeniu wraca wybrana szerokość listy.
+
+Weryfikacja 2026-10-26: `/tmp/check_memy_splitter.py` przeszedł próbę
+z rzeczywistym renderowaniem Dear PyGui i symulowanymi zdarzeniami przeciągania
+na tymczasowej bazie i obrazie. Sprawdzono oba tryby, osobne szerokości,
+minimalne rozmiary, skalowanie obrazu, opisy, oba widoki duplikatów, F11
+oraz zmniejszenie i przywrócenie okna. Formatowanie i lint przeszły.
+
+### Porównywanie opisów
+
+1. [ ] „Porównanie” jest osobnym widokiem obok „Szukaj” i „Lista”. Można
+   wejść bez wybranego mema, z jednym opisem lub bez opisów, również przy
+   pustej kolekcji. „Porównaj opisy” otwiera porównanie z bieżącego podglądu.
+   W każdej kolumnie są niezależne filtry modelu, promptu i rozumowania.
+2. [ ] Scena leży obok sceny również przy innej kolejności pól w JSON-ie.
+   Różne długości tekstu nie przesuwają kolejnych pól między kolumnami;
+   brak pola jest zaznaczony. Obie kolumny przewijają się razem, a opisy
+   zawijają się po zmianie rozmiaru okna. Stopka pozostaje widoczna.
+3. [ ] Zmiana wariantu dotyczy wyłącznie wybranej kolumny. Para przetrwa
+   przejścia między memami oraz zamknięcie i ponowne otwarcie porównania.
+   Mem bez wybranego wariantu pokazuje komunikat, bez automatycznej podmiany;
+   mem bez żadnego udanego opisu nie pojawia się w sekwencji porównania.
+4. [ ] Poprzedni/następny mem oraz strzałki przechodzą po wynikach „Szukaj”,
+   przefiltrowanej „Liście” albo otwartej grupie duplikatów, zależnie od miejsca
+   wejścia. Na końcach sekwencji przyciski są wyłączone. Rozwinięty wybór
+   wariantu pozostaje otwarty i nie przełącza mema podczas wyboru.
+5. [ ] Kliknięcie miniatury powiększa obraz. Esc najpierw zamyka powiększenie,
+   a następnie porównanie. „Wróć” przywraca oryginalny mem, wariant opisu,
+   zapytanie, zaznaczenie, przewinięcie i stan F11 lub otwartej grupy.
+6. [ ] Niedostępny, podmieniony lub uszkodzony plik przy przejściu do kolejnego
+   mema daje komunikat i zachowuje bieżący obraz i opisy. Wielokrotne zmiany
+   memów, powiększanie i wychodzenie nie zostawiają starych obrazów.
+7. [ ] Każdy filtr ma opcję „Dowolny”. Wartości obejmują wszystkie udane opisy
+   w bazie; nieudane próby nie dodają wariantów. „Brak ustawienia” wybiera NULL
+   effort, a `none` tylko jawne `none`. Ustaw prompt w jednej kolumnie, a w drugiej
+   „Dowolny”; obie kolumny zachowują własne ograniczenia i wybrany wariant.
+8. [ ] Przy kilku pasujących konfiguracjach lista wariantów jest widoczna
+   pod filtrami. Przy jednej wybór jest automatyczny, a lista znika. Kombinacja
+   parametrów bez dopasowań pokazuje komunikat. Filtry i ostatni mem przetrwają
+   przełączenie do innego widoku i powrót do „Porównania”.
+9. [ ] Filtry parametrów ograniczają bieżącą sekwencję do memów z co najmniej
+   jednym pasującym udanym opisem po każdej stronie. „Dowolny” dopuszcza każdy
+   wariant, ale nadal wymaga opisu. Nieudana próba nie spełnia warunku.
+   Parametry jednej strony muszą pasować do tego samego opisu.
+10. [ ] Zawężenie zachowuje bieżący mem, jeśli nadal pasuje; w przeciwnym razie
+    wybiera pierwszy pasujący. Licznik i przyciski od razu uwzględniają wynik.
+    Zero dopasowań usuwa poprzedni obraz i opisy, pozostawiając filtry oraz
+    komunikat. Poluzowanie przywraca ukryte memy we wcześniejszej kolejności,
+    również po przełączeniu widoków przy pustym wyniku. Porównanie nie dodaje
+    memów spoza źródłowych wyników/listy/grupy ani nie zmienia listy źródłowej.
+11. [ ] „Kopiuj porównanie” kopiuje sam JSON z kluczami `meme`, `left` i `right`.
+    Mem ma ścieżkę względną, SHA-256 i wymiary, a każda strona faktycznie wybrany
+    model, prompt, effort oraz pełny opis, także puste pola i listy. Polskie znaki,
+    nowe linie i cudzysłowy są zachowane. Brak jednej strony lub pusty wynik
+    wyłącza przycisk; wybór dostępnego wariantu przywraca możliwość kopiowania.
+12. [ ] „Kopiuj wszystkie pary” kopiuje `{"comparisons": [...]}` w kolejności
+    bieżącej listy, z dokładnie dwoma wariantami wybranymi poniżej filtrów.
+    Przy „Dowolny” eksport nie podmienia wariantu na inny dostępny dla mema.
+    Mem z tylko jednym wybranym wariantem, nieudaną próbą lub niedostępnym albo
+    podmienionym plikiem jest pomijany. Status podaje liczbę par i pominięć.
+13. [ ] Eksport wielu par zachowuje bieżący obraz, zaznaczenie i filtry.
+    Działa również, gdy bieżący mem nie ma wybranego wariantu, ale inne memy
+    mają całą parę. Pusty wynik eksportu zachowuje poprzedni schowek.
+14. [ ] Brak wybranego wariantu pokazuje „Opisz i embeduj ten mem” przy właściwej
+    stronie. Opisywany jest tylko bieżący hash z dokładnym modelem, promptem
+    i effortem z dolnej listy, także przy „Dowolny”. „Brak ustawienia” usuwa
+    effort z aktywnej konfiguracji; `none` pozostaje osobną wartością.
+15. [ ] Zapisany opis pojawia się od razu, jeszcze podczas embedowania, bez zmiany
+    wariantów, mema, obrazu i przewinięcia pól. Podczas pracy można nawigować
+    i zmieniać widoki. Ukończenie zadania nie przywraca poprzedniego mema.
+    Ponowne dodanie tego samego hasha i wariantu, embedowanie całej kolekcji
+    i usuwanie są blokowane do zakończenia kolejki.
+16. [ ] Embedding powstaje z nowego wariantu, także dla niereprezentanta grupy
+    i fizycznej kopii. Istniejący wektor oraz FTS tego hasha są zastępowane
+    razem. Pozostałe memy i opisy pozostają bez zmian. Błąd embedowania daje
+    mały komunikat przy stronie, zachowuje opis i poprzednie indeksy oraz
+    nie uruchamia kolejnej próby. Błąd opisu nie uruchamia embedowania;
+    podmieniony lub niezindeksowany plik nie trafia do modelu.
+17. [ ] Podczas pracy „Dodaj do kolejki” przyjmuje kolejne memy i różne warianty
+    tego samego mema. Każde zadanie zachowuje własny model, prompt, effort,
+    backend oraz ustawienia embeddingu z chwili kliknięcia. Późniejsze zmiany
+    filtrów i konfiguracji ich nie podmieniają. Kolejność jest zgodna z kliknięciami,
+    zadania nie wykonują się równolegle, a fizyczne kopie nie dublują zadania
+    tego samego wariantu. Widać licznik oczekujących i pozycję wariantu.
+18. [ ] Błąd opisu, embeddingu lub pliku nie zatrzymuje następnego zadania.
+    Embedding po błędzie nadal nie jest ponawiany. Kolejka działa po zmianie
+    widoku; po jej opróżnieniu przywraca dostępność embedowania kolekcji
+    i dodawania zadań oraz ukrywa licznik. Odświeżenie nie zmienia oglądanego mema.
+
+Weryfikacja 2026-10-26: `/tmp/check_memy_comparison.py` przeszedł test
+z rzeczywistym oknem Dear PyGui, tymczasową bazą i obrazami. Sprawdzono
+wyrównanie pól w różnej kolejności, wspólne przewijanie, nawigację po wynikach,
+przefiltrowanej liście i grupie, zachowanie pary, brak jednego lub obu wariantów,
+powiększenie obrazu, Esc, przywracanie stanu, zwężanie okna i błąd wczytania.
+Ponownie przeszły próby separatora paneli i embedowania w tle.
+Zrzut widoku zapisano jako `/tmp/memy-comparison-preview.png`. Po dodaniu
+osobnego widoku sprawdzono również wejście bez zaznaczenia, wznowienie,
+niezależne filtry, „Dowolny”, rozróżnienie NULL/none, zero/jeden/wiele
+dopasowań oraz pustą kolekcję.
+
+Weryfikacja filtrowania 2026-10-26: `/tmp/check_memy_comparison_filters.py`
+sprawdził w renderowanym GUI przecięcie obu filtrów, „Dowolny”, NULL/none,
+nieudane opisy, parametry z jednego opisu, fizyczne kopie, kolejność,
+nawigację, pusty wynik i wznowienie, przywracanie ukrytych memów oraz
+zachowanie źródłowej listy. Baza pozostała bez zmian. Test separatora
+paneli również przeszedł.
+
+Weryfikacja kopiowania 2026-10-26: test renderowanego GUI przechwycił zapis
+do schowka i sprawdził poprawny JSON, parametry faktycznie wybranych wariantów,
+pełne opisy z polskimi znakami, pustymi polami i listami oraz blokadę przy braku
+wariantu lub pustym wyniku. Zawartość schowka pulpitu pozostała niezmieniona.
+
+Weryfikacja eksportu wielu par 2026-10-26: test sprawdził zgodność pojedynczej
+pary z eksportem zbiorczym, dokładne warianty mimo „Dowolny”, kolejność i zakres
+listy, fizyczne kopie, pomijanie niepełnych par i podmienionych plików,
+zachowanie bieżącego podglądu oraz brak nadpisania schowka przy pustym eksporcie.
+
+Weryfikacja generowania wariantu 2026-10-26:
+`/tmp/check_memy_comparison_generation.py` przeszedł test renderowanego GUI,
+tymczasowej bazy i symulowanych usług. Sprawdzono dokładny model/prompt,
+NULL/none, fizyczną kopię niereprezentanta, pojawienie się opisu przed
+zakończeniem embedowania, nawigację i zmianę widoku w trakcie pracy,
+blokadę równoległych zadań i usuwania, zastąpienie indeksów oraz ich zachowanie
+przy błędzie żądania i rollbacku zapisu. Nieudany embedding miał jedną próbę,
+a błąd opisu i podmieniony plik nie uruchomiły embedowania. Konfiguracja
+pozostała bez zmian. Przeszły też dotychczasowe testy filtrów, kopiowania
+porównań i embedowania kolekcji, formatowanie oraz lint.
+
+Weryfikacja kolejki: `/tmp/check_memy_comparison_queue.py` przeszedł test
+renderowanego GUI z tymczasową bazą i symulowanymi usługami. Kolejne zadania
+miały różne modele, prompty, effort (także NULL/none), backendy i ustawienia
+embeddingu. Sprawdzono zachowanie kopii zagnieżdżonej konfiguracji, kolejność
+kliknięć, brak równoległego przetwarzania, deduplikację między stronami
+i fizycznymi kopiami, różne warianty jednego mema, pozycje i licznik kolejki.
+Błędy opisu, embeddingu i podmienionego pliku przepuszczały następne zadanie;
+embedding miał jedną próbę. Oczekujące zadania dokończyły się również po
+przejściu do Listy. Podgląd i warianty pozostały bez zmian, a po opróżnieniu
+kolejki wróciła dostępność embedowania kolekcji. Przeszły też regresje
+generowania pojedynczego wariantu, filtrów, eksportu i embedowania kolekcji.
+
 ### Podgląd duplikatów i identycznych kopii — dostępne w GUI
 
 - [ ] Przyciski „Grupa duplikatów”, „Identyczne kopie” i „Wróć do wyniku”
@@ -222,6 +377,10 @@ uv run memes.py all --config config.test.toml --limit 10
 
 - [ ] `all` wykonuje kolejno scan, describe i embed, a `scan`, `describe` i
   `embed` osobno wykonują tylko własny etap.
+1. [ ] `scan embed --config config.test.toml --limit 1` wykonuje kolejno scan
+   i embed bez opisywania. Flagi po nazwach etapów są wspólne; `--limit`
+   ogranicza tylko embed. `describe embed` obsługuje wspólne `--model`
+   i `--limit` oraz flagi opisywania. `search "scan embed"` nadal jest zapytaniem.
 - [ ] `all` przyjmuje flagi etapów: `--regroup-only` i `--prune-missing` dla
   skanowania, `--path` albo `--undescribed-only`, `--any-effort`, `--effort`
   i `-v` dla opisywania, a `--model` i `--limit` dla opisywania oraz embeddingów.
