@@ -25,12 +25,13 @@
           "situational",
           "shitpost",
           "savage",
+          "schizoposting",
           "political",
           "meta",
           "wordplay"
         ]
       },
-      "minItems": 1,
+      "minItems": 0,
       "maxItems": 3
     }
   },

@@ -5,7 +5,7 @@ phash_threshold = 8
 [describe]
 backend = "codex-cli"  # runs `codex exec`
 model = "gpt-6-astra"  # passed to --model
-prompt_version = "vcodex1-master"
+prompt_version = "vcodex3"
 effort_level = "low"  # passed as model_reasoning_effort
 
 [embed]

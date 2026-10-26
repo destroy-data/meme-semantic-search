@@ -15,6 +15,12 @@ config.toml
 
 # Local-only: API keys, run logs, Claude Code session state
 xai
+/or
 limit
 .claude/
 gemini-sample.json
+
+# Local prompt experiments
+/compare_gemini.py
+/prompts/guidelines.md
+/prompts/vgemini1.txt
