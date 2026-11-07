@@ -337,7 +337,6 @@ If a similar image seems missing from search, check its duplicate group in Lista
 Groups can contain false positives; lower `phash_threshold` and regroup to make
 matching stricter. Scanning and grouping do not delete image files.
 
-For development details, see [AGENTS.md](AGENTS.md), the
-[manual verification guide](TESTING.md), and
-[architecture notes](ARCHITECTURE.md). The architecture document includes
-historical assumptions; use the current configuration and code for exact behavior.
+For development details and architecture notes, see [AGENTS.md](AGENTS.md) and
+the [manual verification guide](TESTING.md). Architecture notes include historical
+assumptions; use the current configuration and code for exact behavior.
