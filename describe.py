@@ -16,7 +16,9 @@ import sys
 import tempfile
 import textwrap
 import time
+import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -48,12 +50,70 @@ REQUEST_TIMEOUT = 4 * 69  # Somewhat nice
 # skipped. Wait the window out and re-send the same image instead.
 USAGE_LIMIT_WAIT = 3600 // 4
 USAGE_LIMIT_API_ERROR = "usage_limit_reached"
+TRANSCRIBE_TIMEOUT = 420  # the first request may have to load the ASR model
+# Whisper fills music and silence with placeholders and stock phrases from its
+# training subtitles. Compared after dropping *...*, [...], (...), punctuation
+# (including ♪) and case.
+NON_SPEECH = {
+    "",
+    "music",
+    "muzyka",
+    "muzyka w tle",
+    "signal",
+    "dziękuję za uwagę",
+    "thanks for watching",
+    "thank you for watching",
+    "napisy stworzone przez społeczność amara org",
+    "subtitles by the amara org community",
+}
+
+
+SCENE_CUT = 0.15
+VIDEO_SCENE_CUT = 0.3
+VIDEO_MAX_FRAMES = 12
 
 
 @dataclass
 class DescriptionImage:
     path: Path
     timestamp: float | None = None  # seconds in an animation; None for a still
+    video: bool = False  # frame of a video file; its soundtrack is not sent
+
+
+def shot_frame_indices(
+    starts: list[float], cuts: list[float], duration: float
+) -> list[int]:
+    """The first frame, then shot midpoints (middle and last frame without cuts)."""
+    cuts = sorted({cut for cut in cuts if 0 < cut < duration})
+    if cuts:
+        boundaries = [0.0, *cuts, duration]
+        targets = [(a + b) / 2 for a, b in pairwise(boundaries)]
+    else:
+        targets = [duration / 2, starts[-1]]
+    indices = [0, *(bisect.bisect_right(starts, target) - 1 for target in targets)]
+    return list(dict.fromkeys(indices))
+
+
+def prepare_video_images(path: Path, workdir: Path) -> list[DescriptionImage]:
+    """The GIF frame selection on a video, with a higher cut threshold and a cap.
+
+    Real footage scores camera motion and compression above the GIF cut
+    threshold. Above VIDEO_MAX_FRAMES frames, they are thinned evenly, always
+    keeping the first.
+    """
+    starts, scores = common.video_frames(path)
+    last_delay = starts[-1] - starts[-2] if len(starts) > 1 else 0.1
+    duration = starts[-1] + (last_delay if last_delay > 0 else 0.1)
+    cuts = [start for start, score in zip(starts, scores) if score > VIDEO_SCENE_CUT]
+    indices = shot_frame_indices(starts, cuts, duration)
+    if len(indices) > VIDEO_MAX_FRAMES:
+        step = (len(indices) - 1) / (VIDEO_MAX_FRAMES - 1)
+        indices = [indices[round(i * step)] for i in range(VIDEO_MAX_FRAMES)]
+    frames = common.extract_video_frames(path, indices, workdir)
+    return [
+        DescriptionImage(frame, starts[index], video=True)
+        for frame, index in zip(frames, sorted(indices))
+    ]
 
 
 def prepare_description_images(path: Path, workdir: Path) -> list[DescriptionImage]:
@@ -62,8 +122,11 @@ def prepare_description_images(path: Path, workdir: Path) -> list[DescriptionIma
     Pillow decodes GIF/WebP/APNG and supplies their frame durations. FFmpeg
     detects cuts on those decoded frames with the prompt's scene > 0.15 rule.
     Selected PNGs retain their original resolution. The caller owns workdir.
+    Videos are decoded and scored by FFmpeg; see prepare_video_images.
     """
     path = path.resolve()
+    if common.is_video(path):
+        return prepare_video_images(path, workdir)
     with Image.open(path) as image:
         if not getattr(image, "is_animated", False):
             return [DescriptionImage(path)]
@@ -105,7 +168,7 @@ def prepare_description_images(path: Path, workdir: Path) -> list[DescriptionIma
                     "-i",
                     str(concat),
                     "-vf",
-                    "select='gt(scene,0.15)',metadata=print:file=-",
+                    f"select='gt(scene,{SCENE_CUT})',metadata=print:file=-",
                     "-fps_mode",
                     "passthrough",
                     "-f",
@@ -116,39 +179,56 @@ def prepare_description_images(path: Path, workdir: Path) -> list[DescriptionIma
             )
             if returncode:
                 raise RuntimeError(f"ffmpeg scene detection failed: {stderr[:1000]}")
-            cuts = sorted(
-                {
-                    float(value)
-                    for value in re.findall(r"pts_time:([0-9.eE+-]+)", stdout)
-                    if 0 < float(value) < duration
-                }
-            )
-            if cuts:
-                boundaries = [0.0, *cuts, duration]
-                targets = [(a + b) / 2 for a, b in pairwise(boundaries)]
-            else:
-                targets = [duration / 2, starts[-1]]
-            selected, seen = [], set()
-            for target in targets:
-                index = bisect.bisect_right(starts, target) - 1
-                if index in seen:
-                    continue
-                seen.add(index)
+            cuts = [
+                float(value) for value in re.findall(r"pts_time:([0-9.eE+-]+)", stdout)
+            ]
+            selected = []
+            for index in shot_frame_indices(starts, cuts, duration):
                 output = workdir / f"shot-{len(selected) + 1:03d}.png"
                 shutil.copyfile(frames_dir / f"frame-{index + 1:06d}.png", output)
                 selected.append(DescriptionImage(output, starts[index]))
             return selected
 
 
-def description_image_prompt(prompt: str, images: list[DescriptionImage]) -> str:
+@dataclass
+class Transcript:
+    has_audio: bool  # False: the video has no audio stream
+    text: str  # recognised speech, one segment per line; "" = none
+
+
+def description_image_prompt(
+    prompt: str, images: list[DescriptionImage], transcript: Transcript | None = None
+) -> str:
     if images[0].timestamp is None:
         return prompt
     timestamps = ", ".join(f"{image.timestamp:.3f} s" for image in images)
-    return (
-        prompt + "\n\nZałączone obrazy to wybrane klatki jednej animacji, "
+    source = "jednego filmu" if images[0].video else "jednej animacji"
+    text = (
+        prompt + f"\n\nZałączone obrazy to wybrane klatki {source}, "
         f"w kolejności chronologicznej ({timestamps}). "
         "Klatki zostały już wyodrębnione: analizuj je razem i opisz jako jeden mem. "
         "Nie wykonuj ponownej ekstrakcji."
+    )
+    if images[0].video:
+        text += "\n\n" + audio_note(transcript)
+    return text
+
+
+def audio_note(transcript: Transcript | None) -> str:
+    if transcript is None:
+        return "Ścieżka dźwiękowa filmu nie została dołączona."
+    if not transcript.has_audio:
+        return "Film nie ma ścieżki dźwiękowej."
+    if not transcript.text:
+        return (
+            "Automatyczna transkrypcja nie rozpoznała w ścieżce dźwiękowej mowy "
+            "ani śpiewu (np. sama muzyka lub cisza)."
+        )
+    return (
+        "Automatyczna transkrypcja ścieżki dźwiękowej filmu (może zawierać błędy; "
+        f"♪ oznacza śpiew):\n{transcript.text}\n"
+        "Uwzględnij w opisie mema to, co słychać. Pole transcription zawiera "
+        "wyłącznie tekst widoczny na klatkach."
     )
 
 
@@ -462,6 +542,87 @@ class OpenCodeCLIError(DescriptionCLIError):
     pass
 
 
+class TranscriptionError(DescriptionCLIError):
+    """The ASR service failed, which says nothing about the video."""
+
+
+def speech_text(segments: list[dict]) -> str:
+    """Join recognised segments, dropping placeholders and immediate repeats."""
+    lines = []
+    for segment in segments:
+        text = " ".join(str(segment.get("text", "")).split())
+        bare = re.sub(r"\*[^*]*\*|\[[^\]]*\]|\([^)]*\)", " ", text)
+        bare = " ".join(re.sub(r"[^\w\s]", " ", bare).split()).casefold()
+        if bare not in NON_SPEECH and (not lines or lines[-1] != text):
+            lines.append(text)
+    return "\n".join(lines)
+
+
+def request_transcription(cfg: dict, wav: Path) -> tuple[str, str | None]:
+    """POST the WAV as an OpenAI-style multipart transcription request."""
+    boundary = uuid.uuid4().hex
+    fields = {"response_format": "verbose_json"}
+    for key in ("model", "language"):
+        if cfg.get(key):
+            fields[key] = cfg[key]
+    body = b"".join(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
+        f"{value}\r\n".encode()
+        for name, value in fields.items()
+    )
+    body += (
+        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
+        'filename="audio.wav"\r\nContent-Type: audio/wav\r\n\r\n'
+    ).encode()
+    body += wav.read_bytes() + f"\r\n--{boundary}--\r\n".encode()
+    headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+    if cfg.get("api_key"):
+        headers["Authorization"] = f"Bearer {cfg['api_key']}"
+    url = cfg["base_url"].rstrip("/") + cfg.get("endpoint", "/audio/transcriptions")
+    request = urllib.request.Request(url, data=body, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=TRANSCRIBE_TIMEOUT) as response:
+            data = json.load(response)
+    except urllib.error.HTTPError as e:
+        detail = e.read()[:500].decode(errors="replace")
+        raise TranscriptionError(
+            f"transcription failed: HTTP {e.code} from {url}: {detail}"
+        ) from e
+    except (OSError, ValueError) as e:
+        raise TranscriptionError(f"transcription failed ({url}): {e}") from e
+    if not isinstance(data, dict) or not isinstance(data.get("text", ""), str):
+        raise TranscriptionError(f"unexpected transcription response from {url}")
+    segments = data.get("segments")
+    if not isinstance(segments, list):  # services answering only with plain text
+        segments = [{"text": line} for line in data.get("text", "").splitlines()]
+    return speech_text(segments), data.get("language")
+
+
+def video_transcript(
+    con: sqlite3.Connection, digest: str, path: str, cfg: dict | None
+) -> Transcript | None:
+    """Cached soundtrack transcript; None for images or without [transcribe]."""
+    if not cfg or not common.is_video(path):
+        return None
+    row = con.execute(
+        "SELECT has_audio, text FROM audio_transcripts WHERE hash = ?", (digest,)
+    ).fetchone()
+    if row:
+        return Transcript(bool(row[0]), row[1])
+    text, language = "", None
+    with tempfile.TemporaryDirectory(prefix="meme-audio-") as tmp:
+        wav = common.extract_audio(Path(path), Path(tmp))
+        if wav is not None:
+            text, language = request_transcription(cfg, wav)
+    con.execute(
+        "INSERT OR REPLACE INTO audio_transcripts "
+        "(hash, has_audio, text, language, model) VALUES (?, ?, ?, ?, ?)",
+        (digest, wav is not None, text, language, cfg.get("model")),
+    )
+    con.commit()  # transcribed once, even if describing this video fails
+    return Transcript(wav is not None, text)
+
+
 def prepare_cli_attachments(
     images: list[DescriptionImage], workdir: Path
 ) -> list[Path]:
@@ -478,7 +639,12 @@ def prepare_cli_attachments(
 
 
 def request_description_opencode_cli(
-    cfg: dict, prompt: str, images: list[DescriptionImage], *, verbose: bool = False
+    cfg: dict,
+    prompt: str,
+    images: list[DescriptionImage],
+    *,
+    transcript: Transcript | None = None,
+    verbose: bool = False,
 ) -> tuple[str, dict | None]:
     """OpenCode V2: attached images, isolated config and no model tools."""
     model = cfg["model"]
@@ -575,7 +741,7 @@ def request_description_opencode_cli(
             argv += ["--file", str(attachment)]
         argv += [
             "--",
-            description_image_prompt(description_json_prompt(""), images),
+            description_image_prompt(description_json_prompt(""), images, transcript),
         ]
         try:
             returncode, stdout, stderr = run_description_cli(
@@ -628,7 +794,12 @@ def request_description_opencode_cli(
 
 
 def request_description_codex_cli(
-    cfg: dict, prompt: str, images: list[DescriptionImage], *, verbose: bool = False
+    cfg: dict,
+    prompt: str,
+    images: list[DescriptionImage],
+    *,
+    transcript: Transcript | None = None,
+    verbose: bool = False,
 ) -> tuple[str, dict | None]:
     """Use the versioned prompt as Codex's replacement model instructions."""
     with tempfile.TemporaryDirectory(prefix="meme-codex-") as tmp:
@@ -752,7 +923,9 @@ def request_description_codex_cli(
             argv += ["-c", "model_reasoning_effort=" + json.dumps(cfg["effort_level"])]
         argv.append("-")
         body = description_image_prompt(
-            "Opisz załączony mem. Zwróć wyłącznie JSON zgodny ze schematem.", images
+            "Opisz załączony mem. Zwróć wyłącznie JSON zgodny ze schematem.",
+            images,
+            transcript,
         )
         try:
             cli_options = {"cwd": tmp, "verbose": verbose}
@@ -852,6 +1025,7 @@ def describe_memes(
     shuffle: bool = False,
     verbose: bool = False,
     paths: list[str] | None = None,
+    transcribe: dict | None = None,
 ) -> None:
     if undescribed_only and paths:
         raise SystemExit("--undescribed-only cannot be combined with --path")
@@ -953,7 +1127,7 @@ def describe_memes(
     previous_handler = signal.signal(signal.SIGINT, request_stop)
     try:
         done, failed = describe_rows(
-            con, cfg, rows, prompt, backend, verbose, lambda: stop
+            con, cfg, rows, prompt, backend, verbose, lambda: stop, transcribe
         )
     finally:
         signal.signal(signal.SIGINT, previous_handler)
@@ -972,7 +1146,10 @@ def describe_rows(
     backend: str,
     verbose: bool,
     stopping,
+    transcribe: dict | None = None,
 ) -> tuple[int, int]:
+    """Describe rows in order; videos are transcribed first when [transcribe]
+    is configured, and the model gets the frames plus the transcript."""
     version = cfg["prompt_version"]
     model = cfg["model"]
     effort = cfg.get("effort_level")
@@ -986,9 +1163,20 @@ def describe_rows(
             try:
                 tokens = None
                 usage_json = None
+                transcript = video_transcript(con, digest, path, transcribe)
+                if verbose and transcript is not None:
+                    lines = transcript.text.count("\n") + bool(transcript.text)
+                    print(
+                        f"{Path(path).name}: "
+                        + (
+                            f"{lines} transcript lines"
+                            if transcript.has_audio
+                            else "no audio stream"
+                        )
+                    )
                 with tempfile.TemporaryDirectory(prefix="meme-images-") as tmp:
                     images = prepare_description_images(Path(path), Path(tmp))
-                    image_prompt = description_image_prompt(prompt, images)
+                    image_prompt = description_image_prompt(prompt, images, transcript)
                     if verbose and images[0].timestamp is not None:
                         print(
                             f"{Path(path).name}: selected {len(images)} animation frames"
@@ -1001,12 +1189,12 @@ def describe_rows(
                     elif backend == "codex-cli":
                         started = time.monotonic()
                         raw, usage = request_description_codex_cli(
-                            cfg, prompt, images, verbose=verbose
+                            cfg, prompt, images, transcript=transcript, verbose=verbose
                         )
                     elif backend == "opencode-cli":
                         started = time.monotonic()
                         raw, usage = request_description_opencode_cli(
-                            cfg, prompt, images, verbose=verbose
+                            cfg, prompt, images, transcript=transcript, verbose=verbose
                         )
                     else:
                         urls = [
@@ -1156,6 +1344,7 @@ def run(args: argparse.Namespace, cfg: dict) -> None:
         shuffle=args.shuffle,
         verbose=args.verbose,
         paths=args.path,
+        transcribe=cfg.get("transcribe"),
     )
     con.close()
 

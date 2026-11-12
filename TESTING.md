@@ -522,6 +522,7 @@ backendów. Formatowanie i lint przeszły. Nie wykonano wywołania usługi Codex
 
 ## Wspólne klatki animacji
 
+- [ ] Zawsze pierwsza klatka (GIF i wideo, także po przerzedzeniu do 12).
 - [ ] Animacja z cięciami: jedna klatka ze środka każdego ujęcia (`scene > 0.15`).
 - [ ] Bez cięć: klatka ze środka i ostatnia; ten sam indeks klatki tylko raz.
 - [ ] Zmienne czasy klatek w GIF/WebP/APNG i APNG z osobnym podglądem statycznym.
@@ -529,6 +530,25 @@ backendów. Formatowanie i lint przeszły. Nie wykonano wywołania usługi Codex
   na ścieżkach HTTP/Codex. Pliki tymczasowe znikają po żądaniu/błędzie.
 - [ ] Brak `ffmpeg` lub błąd ekstrakcji zapisuje błąd tylko danego obrazu;
   kolejny obraz statyczny nadal jest opisywany.
+- [ ] Wideo (mp4/webm): skan liczy phash ze środkowej klatki, uszkodzony plik
+  jest pomijany, ponowny skan nic nie dodaje. Opis: cięcia `scene > 0.3`,
+  wybór klatek jak w GIF, maksymalnie 12 klatek, w prompcie informacja, że
+  ścieżka dźwiękowa nie została dołączona.
+- [ ] `[transcribe]`: mowa trafia do promptu, sama muzyka daje notkę „nie
+  rozpoznała mowy”, film bez audio — „nie ma ścieżki dźwiękowej”; transkrypcja
+  zapisuje się raz na hash i jest używana ponownie; niedostępna usługa zatrzymuje
+  przebieg bez wiersza w `descriptions`; stara baza dostaje `audio_transcripts`.
+- [ ] GUI: podgląd wideo pokazuje środkową klatkę z dopiskiem „film”;
+  Ctrl+C kopiuje plik jako `video/*`, Ctrl+O otwiera odtwarzacz przez `xdg-open`.
+
+Weryfikacja 2026-11-12: skan kopii mp4/webm/gif (także ścieżka ze spacją,
+identyczna kopia i uszkodzony mp4), wybór klatek na 9 filmach z kolekcji,
+porównanie wyboru klatek z poprzednią wersją na 89 GIF/WebP (bez różnic),
+opis jednego mp4 przez `claude-code-cli`, embed i wyszukanie go. GUI
+sprawdzono tylko na poziomie funkcji wyciągającej klatkę, bez okna.
+Transkrypcja: lokalna usługa asr-whisper-service (`/inference`) na filmie z mową,
+z samą muzyką i bez audio; migracja starej bazy; zatrzymanie przy wyłączonej
+usłudze; opis dwóch filmów przez `claude-code-cli` z transkrypcją.
 
 Weryfikacja 2026-10-09: `/tmp/check_meme_animation_frames.py` użył prawdziwego
 FFmpeg do GIF/WebP/APNG (cięcia, brak cięć, zmienne czasy, natywna rozdzielczość,

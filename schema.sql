@@ -54,3 +54,16 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memes_vec USING vec0(
     hash TEXT PRIMARY KEY,
     embedding float[1024]
 );
+
+-- Speech in a video's soundtrack, transcribed once per content hash at the
+-- start of describe and given to the describing model with the frames. Shared
+-- by every description config. has_audio = 0: the video has no audio stream;
+-- text = '': audio without recognised speech (music, silence).
+CREATE TABLE IF NOT EXISTS audio_transcripts (
+    hash       TEXT    PRIMARY KEY REFERENCES memes(hash) ON DELETE CASCADE,
+    has_audio  INTEGER NOT NULL,
+    text       TEXT    NOT NULL,
+    language   TEXT,                             -- as reported by the ASR service
+    model      TEXT,                             -- [transcribe].model; NULL = not sent
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);

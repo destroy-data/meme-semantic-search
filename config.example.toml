@@ -23,3 +23,15 @@ effort_level = "low"  # "none" | "low" | "medium" | "high"; omit for providers t
 base_url = "http://localhost:11434/v1"
 api_key = "ollama"
 model = "bge-m3"
+
+# Optional: transcribe video soundtracks at the start of describe and give the
+# transcript to the describing model with the frames. Omit to send frames only.
+# OpenAI-compatible multipart request to base_url + endpoint (verbose_json).
+# Transcripts are cached per file content; delete rows from audio_transcripts
+# to transcribe again with another model.
+# [transcribe]
+# base_url = "http://127.0.0.1:18080"  # local whisper.cpp (asr-whisper-service)
+# endpoint = "/inference"              # default "/audio/transcriptions"
+# api_key = ""                         # sent as a Bearer token when non-empty
+# model = "whisper-1"                  # sent when set; whisper.cpp ignores it
+# language = "pl"                      # sent when set; omit for auto-detection

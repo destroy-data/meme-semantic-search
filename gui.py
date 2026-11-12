@@ -7,6 +7,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 from collections import Counter, deque
@@ -77,6 +78,11 @@ CLIPBOARD_MIME = {
     ".jpeg": "image/jpeg",
     ".gif": "image/gif",
     ".webp": "image/webp",
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".webm": "video/webm",
+    ".mkv": "video/x-matroska",
+    ".mov": "video/quicktime",
 }
 
 SHORTCUTS = [
@@ -136,13 +142,14 @@ def copy_image_to_clipboard(path: str) -> str:
             subprocess.run(cmd, stdin=fh, check=True, timeout=5)
     except (OSError, subprocess.SubprocessError) as e:
         return f"kopiowanie nie wyszło: {e}"
-    return f"skopiowano obrazek: {os.path.basename(path)}"
+    kind = "film" if common.is_video(path) else "obrazek"
+    return f"skopiowano {kind}: {os.path.basename(path)}"
 
 
 def open_externally(path: str) -> str:
-    viewer = next(
-        (v for v in [*search_stage.VIEWERS, "xdg-open"] if shutil.which(v)), None
-    )
+    # Image viewers cannot play videos; let the desktop pick a player.
+    viewers = [] if common.is_video(path) else search_stage.VIEWERS
+    viewer = next((v for v in [*viewers, "xdg-open"] if shutil.which(v)), None)
     if not viewer:
         return "nie znalazłem przeglądarki obrazków"
     subprocess.Popen(
@@ -389,6 +396,8 @@ class App:
         self.preview_path: str | None = None
         self.preview_hash: str | None = None
         self.image_dir = Path(cfg["image_dir"]).expanduser().resolve()
+        # Middle frames of videos, keyed by content hash; removed on exit.
+        self.frame_dir = tempfile.TemporaryDirectory(prefix="meme-gui-frames-")
         self.img_size: tuple[int, int] = (0, 0)
         self.variants: dict[str, str | None] = {}
         self.top_n = TOP_N_DEFAULT
@@ -1694,6 +1703,7 @@ class App:
                             backend,
                             False,
                             lambda: False,
+                            self.cfg.get("transcribe"),
                         )
                     raw = successful_description()
                     if raw is None:
@@ -2119,9 +2129,10 @@ class App:
                     if hashlib.file_digest(file, "sha256").hexdigest() != digest:
                         continue
                     file.seek(0)
-                    with Image.open(file) as image:
+                    still = self.still_image(path, digest)
+                    with Image.open(file if still == path else still) as image:
                         size = image.size
-            except (OSError, ValueError):
+            except (OSError, ValueError, RuntimeError):
                 continue
             comparisons.append(self.comparison_data(path, digest, size, [left, right]))
         if not comparisons:
@@ -2313,6 +2324,16 @@ class App:
             "preview_img", width=max(1, int(w * scale)), height=max(1, int(h * scale))
         )
 
+    def still_image(self, path: str, digest: str) -> str:
+        """The path itself for images; a cached middle frame for videos."""
+        if not common.is_video(path):
+            return path
+        cached = Path(self.frame_dir.name) / f"{digest}.png"
+        if not cached.is_file():
+            with tempfile.TemporaryDirectory(dir=self.frame_dir.name) as tmp:
+                common.video_middle_frame(Path(path), Path(tmp)).replace(cached)
+        return str(cached)
+
     def show(self, path: str) -> bool:
         # Messages from copy/open/load actions belong to the previous preview.
         dpg.set_value("status", "")
@@ -2330,7 +2351,11 @@ class App:
             dpg.set_value("status", f"plik zniknął lub zmienił zawartość: {path}")
             return False
         # load_image reports an unreadable file by returning None, not raising.
-        loaded = dpg.load_image(path)
+        try:
+            loaded = dpg.load_image(self.still_image(path, digest))
+        except (OSError, RuntimeError) as error:
+            print(f"preview frame failed: {path}: {error}", file=sys.stderr)
+            loaded = None
         if loaded is None:
             # Keep descriptions and navigation available for unsupported images.
             dpg.set_value("status", f"nie mogę wczytać: {path} — pokazuję placeholder")
@@ -2355,6 +2380,8 @@ class App:
         self.preview_path = path
         self.preview_hash = digest
         image_info = f"{w} × {h} px" if loaded is not None else "Brak podglądu obrazu"
+        if common.is_video(path):
+            image_info += " · film, środkowa klatka"
         dpg.set_value("preview_path", f"{image_info} · {self.relative_path(path)}")
         dpg.show_item("preview_path")
         dpg.show_item("file_actions")

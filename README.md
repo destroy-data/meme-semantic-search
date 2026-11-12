@@ -49,8 +49,11 @@ using selected frames, so not every moment of an animation is examined.
 ## Getting started
 
 Run commands from the project directory. You need Python 3.12+, `uv`, and Ollama
-for local embeddings. Install `ffmpeg` on `PATH` to describe animated
-GIF/WebP/APNG files. CLI description backends additionally need their respective
+for local embeddings. Install `ffmpeg` (with `ffprobe`) on `PATH` to describe
+animated GIF/WebP/APNG files and to scan and describe videos
+(mp4/webm/mkv/mov/m4v). Videos are described from selected frames; with an
+optional `[transcribe]` block (see `config.example.toml`) their speech is
+transcribed by a Whisper-style service and given to the model too. CLI description backends additionally need their respective
 client installed and logged in.
 
 ```sh

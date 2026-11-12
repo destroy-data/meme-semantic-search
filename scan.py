@@ -5,6 +5,7 @@ import hashlib
 import os
 import sqlite3
 import sys
+import tempfile
 from collections import defaultdict
 from collections.abc import Iterator
 from pathlib import Path
@@ -14,7 +15,7 @@ from PIL import Image
 
 import common
 
-EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"} | common.VIDEO_EXTENSIONS
 # Rep-selection prefers the row with the most invested pipeline work: embedded
 # beats any-successful-description beats nothing. Failed attempts don't count as
 # "work worth preserving".
@@ -67,11 +68,10 @@ def ingest(
             )
             continue
         try:
-            with Image.open(file) as img:
-                phash = str(imagehash.phash(img))
+            phash = perceptual_hash(file)
         # Pillow fails on broken files with whatever its decoder raises (OSError,
-        # ValueError, SyntaxError, DecompressionBombError...); none of it may
-        # stop the walk.
+        # ValueError, SyntaxError, DecompressionBombError...), FFmpeg failures
+        # raise RuntimeError; none of it may stop the walk.
         except Exception as e:  # noqa: BLE001
             errors += 1
             print(f"skipping {file}: {e}", file=sys.stderr)
@@ -99,6 +99,18 @@ def ingest(
     print(
         f"ingest: {seen} files seen, {new} new, {seen - new - errors} already known, {errors} unreadable"
     )
+
+
+def perceptual_hash(file: Path) -> str:
+    """Images hash their first frame; videos their middle frame."""
+    if not common.is_video(file):
+        with Image.open(file) as img:
+            return str(imagehash.phash(img))
+    with (
+        tempfile.TemporaryDirectory(prefix="meme-scan-") as tmp,
+        Image.open(common.video_middle_frame(file, Path(tmp))) as img,
+    ):
+        return str(imagehash.phash(img))
 
 
 def image_files(image_dir: Path, excluded: set[Path]) -> Iterator[Path]:

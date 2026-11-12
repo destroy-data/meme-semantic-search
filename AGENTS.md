@@ -33,7 +33,7 @@ Use concise imperative subjects; history also uses `docs:` and `gui:` prefixes. 
 
 ## Configuration & Data Safety
 
-Describe supports `openai` HTTP, `claude-code-cli`, `codex-cli`, and `opencode-cli`; configure embeddings independently. The default local setup uses Ollama with `qwen3-vl:8b` and `bge-m3`; CLI backends require authenticated clients. FFmpeg handles animations. Keep credentials, databases, and personal images uncommitted. Deletion requires confirmation. File deletion/move code must verify SHA-256 immediately before acting and preserve records on filesystem failure.
+Describe supports `openai` HTTP, `claude-code-cli`, `codex-cli`, and `opencode-cli`; configure embeddings independently. The default local setup uses Ollama with `qwen3-vl:8b` and `bge-m3`; CLI backends require authenticated clients. FFmpeg handles animations and videos; optional `[transcribe]` sends video audio to an ASR service. Keep credentials, databases, and personal images uncommitted. Deletion requires confirmation. File deletion/move code must verify SHA-256 immediately before acting and preserve records on filesystem failure.
 
 ## Architecture and Project Notes
 
@@ -206,8 +206,10 @@ Each stage is a separate CLI entry point. All stages are idempotent and resumabl
 Two sub-passes, both idempotent, run one after the other in a single `scan`
 invocation:
 
-1. **Ingest.** Walk a configured directory of images (jpg/png/webp/gif). For each
-   new file (unknown sha256): compute sha256 + perceptual hash (`imagehash`),
+1. **Ingest.** Walk a configured directory of images (jpg/png/webp/gif) and
+   videos (mp4/webm/mkv/mov/m4v). For each new file (unknown sha256): compute
+   sha256 + perceptual hash (`imagehash`; videos hash their middle frame, which
+   FFmpeg extracts — unreadable videos are skipped like broken images),
    insert into `memes` with `perceptual_duplicate_of=NULL`. Every physical
    path is recorded in `meme_files(path PRIMARY KEY, hash REFERENCES memes(hash)
    ON DELETE CASCADE)`, including identical copies. A path whose content changes
@@ -375,11 +377,29 @@ means retrying a failed row overwrites the old failure cleanly.
 - Still images are downscaled to max side 1440 px (`MAX_SIDE`; JPEG, quality 90) before being sent
   as a data URL; smaller images pass through untouched. All backends share
   `prepare_description_images`: Pillow decodes GIF/WebP/APNG frames and durations,
-  FFmpeg detects cuts with `scene > 0.15`, and one middle frame per shot is selected.
-  Without cuts, select the middle and last frame; collapse repeated selections of
+  FFmpeg detects cuts with `scene > 0.15`; the first frame is always selected, plus
+  one middle frame per shot. Without cuts, add the middle and last frame; collapse repeated selections of
   the same frame. Selected PNGs retain native resolution and are sent together in
   chronological order, with timestamps. Requires `ffmpeg` on PATH for animations;
-  failures are per-image errors, never a silent first-frame fallback. Temporary
+  failures are per-image errors, never a silent first-frame fallback.
+  Videos are decoded by FFmpeg directly (no Pillow): cuts use `scene > 0.3`
+  (real footage scores motion above 0.15), otherwise the same shot-midpoint /
+  middle-and-last selection as GIFs; more than 12 frames are thinned evenly, keeping the first.
+- Video soundtracks are transcribed at the start of describe, before the
+  describing model runs, when `[transcribe]` is configured (`base_url`,
+  `api_key`, optional `model`/`language`; `endpoint` defaults to the
+  OpenAI-style `/audio/transcriptions`, the local whisper.cpp service at
+  `../asr-whisper-service` uses `/inference`). FFmpeg extracts 16 kHz mono WAV,
+  the response is read as `verbose_json`, and Whisper placeholders for music
+  or silence (`♪`, `*Music*`, `[...]`, "Thanks for watching"...) are dropped.
+  The result is cached per content hash in `audio_transcripts` (`has_audio`,
+  `text`; `''` = no recognised speech) and reused by every description config;
+  delete rows to re-transcribe. The describing model gets the frames plus the
+  transcript (or a note: no audio stream / no speech / audio not included), on
+  every backend. The transcript itself is not indexed. An unreachable or
+  failing ASR service stops the run without writing a row; an audio extraction
+  failure is a per-image `failed_describe`. `common.connect` creates the table
+  in existing databases. Temporary
   files live through the request and are then removed. `temperature=0`, `max_tokens` unset (qwen3-vl reasoning
   tokens count against the budget but not against `usage.completion_tokens`, so
   any cap silently truncates mid-CoT and returns empty content).
@@ -505,6 +525,8 @@ collection and search; errors can be retried. Deletion is blocked during the run
   scan/index changes. Missing/replaced files are excluded before counting copies.
 
 
+- Videos preview their middle frame (cached per content hash for the session);
+  copy puts the video bytes on the clipboard, open uses `xdg-open`.
 - Show the selected meme's path directly below its image, relative to the
   configured `image_dir`. Apply this in search and duplicate views. Keep the
   absolute stored path for file operations; for a file outside `image_dir`,
