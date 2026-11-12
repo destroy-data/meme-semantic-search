@@ -538,7 +538,8 @@ backendów. Formatowanie i lint przeszły. Nie wykonano wywołania usługi Codex
   rozpoznała mowy”, film bez audio — „nie ma ścieżki dźwiękowej”; transkrypcja
   zapisuje się raz na hash i jest używana ponownie; niedostępna usługa zatrzymuje
   przebieg bez wiersza w `descriptions`; stara baza dostaje `audio_transcripts`.
-- [ ] GUI: podgląd wideo pokazuje środkową klatkę z dopiskiem „film”;
+- [ ] GUI: podgląd wideo pokazuje pierwszą klatkę z dopiskiem „film”; przyciski
+  `<` / `>` (wideo i animacje) przełączają klatki identyczne z wysyłanymi do modelu;
   Ctrl+C kopiuje plik jako `video/*`, Ctrl+O otwiera odtwarzacz przez `xdg-open`.
 
 Weryfikacja 2026-11-12: skan kopii mp4/webm/gif (także ścieżka ze spacją,

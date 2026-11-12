@@ -91,7 +91,7 @@ SHORTCUTS = [
     ("PgUp / PgDn", f"skok o {PAGE_STEP} wyników"),
     ("Ctrl+Home / Ctrl+End", "pierwszy / ostatni wynik"),
     ("Alt+1…9", "skok do wyniku N"),
-    ("Ctrl+C", "kopiuj OBRAZEK do schowka (wklej na czacie)"),
+    ("Ctrl+C", "kopiuj OBRAZEK / FILM do schowka (wklej na czacie)"),
     ("Ctrl+Shift+C", "kopiuj ścieżkę do pliku"),
     ("Ctrl+O / Shift+Enter", "otwórz w przeglądarce obrazków"),
     ("Tab / Shift+Tab", "następny / poprzedni wariant opisu"),
@@ -144,6 +144,16 @@ def copy_image_to_clipboard(path: str) -> str:
         return f"kopiowanie nie wyszło: {e}"
     kind = "film" if common.is_video(path) else "obrazek"
     return f"skopiowano {kind}: {os.path.basename(path)}"
+
+
+def is_animation(path: str) -> bool:
+    if common.is_video(path):
+        return True
+    try:
+        with Image.open(path) as image:
+            return bool(getattr(image, "is_animated", False))
+    except Exception:  # noqa: BLE001 - unreadable files simply get no frame buttons
+        return False
 
 
 def open_externally(path: str) -> str:
@@ -396,8 +406,11 @@ class App:
         self.preview_path: str | None = None
         self.preview_hash: str | None = None
         self.image_dir = Path(cfg["image_dir"]).expanduser().resolve()
-        # Middle frames of videos, keyed by content hash; removed on exit.
+        # Video first frames and description frame sets, keyed by content hash;
+        # extracted on demand and removed on exit.
         self.frame_dir = tempfile.TemporaryDirectory(prefix="meme-gui-frames-")
+        self.frame_sets: dict[str, list[tuple[str, float | None]]] = {}
+        self.frame_index = 0
         self.img_size: tuple[int, int] = (0, 0)
         self.variants: dict[str, str | None] = {}
         self.top_n = TOP_N_DEFAULT
@@ -577,6 +590,16 @@ class App:
                     border=False,
                 ):
                     dpg.add_text("", tag="preview_path", show=False, wrap=700)
+                    with dpg.group(tag="frame_nav", horizontal=True, show=False):
+                        dpg.add_button(
+                            label="<", small=True, callback=lambda: self.step_frame(-1)
+                        )
+                        dpg.add_button(
+                            label=">", small=True, callback=lambda: self.step_frame(1)
+                        )
+                        dpg.add_text("", tag="frame_label")
+                        with dpg.tooltip("frame_nav"):
+                            dpg.add_text("Klatki wysyłane do modelu przy opisywaniu.")
                     with dpg.group(tag="preview_actions", horizontal=True, show=False):
                         dpg.add_button(
                             label="Grupa duplikatów",
@@ -593,6 +616,7 @@ class App:
                     with dpg.group(tag="file_actions", horizontal=True, show=False):
                         dpg.add_button(
                             label="Kopiuj obraz",
+                            tag="copy_file",
                             callback=lambda: self.queue_copy("image"),
                         )
                         dpg.add_button(
@@ -2129,7 +2153,7 @@ class App:
                     if hashlib.file_digest(file, "sha256").hexdigest() != digest:
                         continue
                     file.seek(0)
-                    still = self.still_image(path, digest)
+                    still = self.preview_image(path, digest)
                     with Image.open(file if still == path else still) as image:
                         size = image.size
             except (OSError, ValueError, RuntimeError):
@@ -2324,15 +2348,66 @@ class App:
             "preview_img", width=max(1, int(w * scale)), height=max(1, int(h * scale))
         )
 
-    def still_image(self, path: str, digest: str) -> str:
-        """The path itself for images; a cached middle frame for videos."""
+    def preview_image(self, path: str, digest: str) -> str:
+        """The path itself for images; a cached first frame for videos."""
         if not common.is_video(path):
             return path
         cached = Path(self.frame_dir.name) / f"{digest}.png"
         if not cached.is_file():
             with tempfile.TemporaryDirectory(dir=self.frame_dir.name) as tmp:
-                common.video_middle_frame(Path(path), Path(tmp)).replace(cached)
+                frame = common.extract_video_frames(Path(path), [0], Path(tmp))[0]
+                frame.replace(cached)
         return str(cached)
+
+    def description_frames(self, path: str, digest: str) -> list[tuple[str, float]]:
+        """The frames describe sends to the model, extracted once per session."""
+        if digest not in self.frame_sets:
+            workdir = Path(self.frame_dir.name) / f"{digest}-frames"
+            workdir.mkdir(exist_ok=True)
+            images = describe_stage.prepare_description_images(Path(path), workdir)
+            self.frame_sets[digest] = [(str(i.path), i.timestamp) for i in images]
+        return self.frame_sets[digest]
+
+    def step_frame(self, delta: int) -> None:
+        if self.preview_path is None or self.preview_hash is None:
+            return
+        try:
+            frames = self.description_frames(self.preview_path, self.preview_hash)
+        except Exception as error:  # noqa: BLE001 - Pillow/FFmpeg failures vary
+            dpg.set_value("status", f"nie mogę wyodrębnić klatek: {error}")
+            return
+        self.frame_index = (self.frame_index + delta) % len(frames)
+        frame, timestamp = frames[self.frame_index]
+        if not self.set_preview_texture(frame):
+            dpg.set_value("status", f"nie mogę wczytać klatki: {frame}")
+            return
+        dpg.set_value(
+            "frame_label",
+            f"klatka {self.frame_index + 1}/{len(frames)} · {timestamp or 0:.3f} s",
+        )
+
+    def set_preview_texture(self, image_path: str) -> bool:
+        loaded = dpg.load_image(image_path)
+        if loaded is None:
+            return False
+        w, h, _ch, data = loaded
+        new_tex = dpg.add_static_texture(
+            width=w, height=h, default_value=data, parent="tex_reg"
+        )
+        if dpg.does_item_exist("preview_img"):
+            dpg.delete_item("preview_img")
+        dpg.add_image(
+            new_tex, tag="preview_img", parent="preview_pane", before="preview_path"
+        )
+        self.clear_comparison_image()
+        if self.current_tex is not None:
+            dpg.delete_item(self.current_tex)
+        self.current_tex = new_tex
+        self.img_size = (w, h)
+        self.fit_image()
+        if self.comparing:
+            self.render_comparison()
+        return True
 
     def show(self, path: str) -> bool:
         # Messages from copy/open/load actions belong to the previous preview.
@@ -2352,7 +2427,7 @@ class App:
             return False
         # load_image reports an unreadable file by returning None, not raising.
         try:
-            loaded = dpg.load_image(self.still_image(path, digest))
+            loaded = dpg.load_image(self.preview_image(path, digest))
         except (OSError, RuntimeError) as error:
             print(f"preview frame failed: {path}: {error}", file=sys.stderr)
             loaded = None
@@ -2381,9 +2456,16 @@ class App:
         self.preview_hash = digest
         image_info = f"{w} × {h} px" if loaded is not None else "Brak podglądu obrazu"
         if common.is_video(path):
-            image_info += " · film, środkowa klatka"
+            image_info += " · film"
         dpg.set_value("preview_path", f"{image_info} · {self.relative_path(path)}")
         dpg.show_item("preview_path")
+        self.frame_index = 0
+        dpg.set_value("frame_label", "pierwsza klatka")
+        dpg.configure_item("frame_nav", show=is_animation(path))
+        dpg.configure_item(
+            "copy_file",
+            label="Kopiuj film" if common.is_video(path) else "Kopiuj obraz",
+        )
         dpg.show_item("file_actions")
         group = related_files(self.con, digest, identical=False)
         available, _ = current_result_paths([(h, p) for h, p, _, _ in group])
@@ -2446,6 +2528,7 @@ class App:
         self.preview_path = None
         self.preview_hash = None
         dpg.hide_item("preview_path")
+        dpg.hide_item("frame_nav")
         dpg.hide_item("file_actions")
         dpg.hide_item("preview_actions")
         dpg.hide_item("compare_open")

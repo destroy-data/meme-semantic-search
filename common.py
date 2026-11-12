@@ -211,6 +211,8 @@ def extract_video_frames(path: Path, indices: list[int], outdir: Path) -> list[P
             f"select='{select}'",
             "-fps_mode",
             "passthrough",
+            "-frames:v",
+            str(len(indices)),  # stop decoding after the last selected frame
             "-y",
             str(pattern),
         ],

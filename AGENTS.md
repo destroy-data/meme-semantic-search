@@ -525,8 +525,11 @@ collection and search; errors can be retried. Deletion is blocked during the run
   scan/index changes. Missing/replaced files are excluded before counting copies.
 
 
-- Videos preview their middle frame (cached per content hash for the session);
-  copy puts the video bytes on the clipboard, open uses `xdg-open`.
+- Videos preview their first frame (cached per content hash for the session);
+  copy puts the video bytes on the clipboard, open uses `xdg-open`. Videos
+  and animated GIF/WebP/APNG get small `<` / `>` buttons that step through
+  exactly the frames `prepare_description_images` sends to the model,
+  extracted on first click and cached for the session.
 - Show the selected meme's path directly below its image, relative to the
   configured `image_dir`. Apply this in search and duplicate views. Keep the
   absolute stored path for file operations; for a file outside `image_dir`,
