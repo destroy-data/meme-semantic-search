@@ -25,7 +25,7 @@ from pathlib import Path
 
 from PIL import Image
 
-import common
+from memy import common
 
 # The VLM output contract is data, not code: the model sees it verbatim (as
 # response_format on openai, --json-schema on Claude, prompt text on OpenCode,

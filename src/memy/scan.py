@@ -13,7 +13,7 @@ from pathlib import Path
 import imagehash
 from PIL import Image
 
-import common
+from memy import common
 
 EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"} | common.VIDEO_EXTENSIONS
 # Rep-selection prefers the row with the most invested pipeline work: embedded

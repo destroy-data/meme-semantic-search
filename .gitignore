@@ -22,5 +22,9 @@ gemini-sample.json
 
 # Local prompt experiments
 /compare_gemini.py
-/prompts/guidelines.md
-/prompts/vgemini1.txt
+/src/memy/prompts/guidelines.md
+/src/memy/prompts/vgemini1.txt
+
+# Local helper scripts
+/describe-lista.fish
+/elo

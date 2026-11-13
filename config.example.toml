@@ -1,3 +1,5 @@
+# Relative db_path, image_dir and [describe].codex_profile resolve against this
+# file's directory (after ~ expansion); absolute paths are used as given.
 db_path = "memes.db"
 image_dir = "<path>"
 # Paths relative to image_dir. A directory entry excludes all files beneath it.

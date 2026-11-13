@@ -1,4 +1,4 @@
-"""Aggregate CLI: `memes.py <stage> [<stage> ...] [flags]`.
+"""Aggregate CLI: `memy <stage> [<stage> ...] [flags]`.
 
 Combine scan, describe and embed in the desired order, followed by their shared
 flags. `all` runs all three in order. Search and GUI run separately.
@@ -8,11 +8,7 @@ Stage modules also stay runnable on their own.
 import argparse
 import sys
 
-import common
-import describe
-import embed
-import scan
-import search
+from memy import common, describe, embed, scan, search
 
 STAGES = [
     ("scan", scan, "scan images into the DB and regroup near-duplicates"),
@@ -34,7 +30,12 @@ def run_all(args: argparse.Namespace, cfg: dict) -> None:
 
 def run_gui(args: argparse.Namespace, cfg: dict) -> None:
     # Imported lazily so the headless stages never pay for (or trip over) dearpygui.
-    import gui
+    try:
+        from memy import gui
+    except ImportError as error:
+        if error.name is None or error.name.split(".")[0] != "dearpygui":
+            raise
+        sys.exit('GUI requires the "gui" extra: uv sync --extra gui')
 
     gui.run(args, cfg)
 
@@ -49,7 +50,7 @@ def main(argv: list[str] | None = None) -> None:
         selected.append(argument)
     if len(selected) > 1:
         pipeline_parser = argparse.ArgumentParser(
-            prog=f"memes {' '.join(selected)}",
+            prog=f"memy {' '.join(selected)}",
             description="Run the selected stages in order, with shared flags.",
             conflict_handler="resolve",
         )
@@ -62,7 +63,7 @@ def main(argv: list[str] | None = None) -> None:
             pipeline[name].run(args, cfg)
         return
 
-    parser = argparse.ArgumentParser(prog="memes", description=__doc__)
+    parser = argparse.ArgumentParser(prog="memy", description=__doc__)
     sub = parser.add_subparsers(dest="stage", required=True)
 
     all_parser = sub.add_parser(

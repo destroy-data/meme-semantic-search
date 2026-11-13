@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 import sqlite_vec
 
-import common
+from memy import common
 
 
 def embedding_text(desc: dict) -> str:

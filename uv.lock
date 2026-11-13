@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 
 [[package]]
@@ -37,23 +37,28 @@ wheels = [
 ]
 
 [[package]]
-name = "meme-semantic-search"
+name = "memes"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
-    { name = "dearpygui" },
     { name = "imagehash" },
     { name = "pillow" },
     { name = "sqlite-vec" },
 ]
 
+[package.optional-dependencies]
+gui = [
+    { name = "dearpygui" },
+]
+
 [package.metadata]
 requires-dist = [
-    { name = "dearpygui", specifier = ">=2.3.1" },
+    { name = "dearpygui", marker = "extra == 'gui'", specifier = ">=2.3.1" },
     { name = "imagehash", specifier = ">=4.3.2" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "sqlite-vec", specifier = ">=0.1.9" },
 ]
+provides-extras = ["gui"]
 
 [[package]]
 name = "numpy"

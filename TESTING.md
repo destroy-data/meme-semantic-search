@@ -21,11 +21,16 @@ albo po zmianie dowolnego etapu pipeline'u.
   poprawne opisy pozostają zgodne z rozszerzonym kontraktem.
 - [ ] Uruchom `ruff format . && ruff check .`; oba polecenia muszą przejść bez
   zmian i błędów.
+- [ ] Po `uv sync --locked` (bez extra `gui`) etapy CLI działają, a
+  `uv run memy gui` wypisuje podpowiedź `uv sync --extra gui` i kończy się
+  niezerowym kodem. Do testów GUI użyj `uv sync --locked --extra gui`.
+- [ ] Względne `db_path` i `image_dir` w testowym TOML działają także po
+  uruchomieniu z innego katalogu (`--config` ze ścieżką bezwzględną).
 
 ## Skanowanie i deduplikacja
 
 ```sh
-uv run memes.py scan --config config.test.toml
+uv run memy scan --config config.test.toml
 ```
 
 - [ ] Liczba `new` odpowiada liczbie różnych zawartości plików; identyczne
@@ -61,7 +66,7 @@ uv run memes.py scan --config config.test.toml
 ## Opisy VLM
 
 ```sh
-uv run memes.py describe --config config.test.toml --limit 10 -v
+uv run memy describe --config config.test.toml --limit 10 -v
 ```
 
 1. [ ] `describe --shuffle --limit 1` losuje z całej kwalifikującej się kolejki
@@ -90,7 +95,7 @@ uv run memes.py describe --config config.test.toml --limit 10 -v
 ## Embedding i indeksy
 
 ```sh
-uv run memes.py embed --config config.test.toml
+uv run memy embed --config config.test.toml
 ```
 
 - [ ] Każdy opisany reprezentant aktywnego `prompt_version` dostaje po jednym
@@ -106,7 +111,7 @@ uv run memes.py embed --config config.test.toml
 ## Wyszukiwanie CLI
 
 ```sh
-uv run memes.py search --config config.test.toml "opis albo cytat" -n 10
+uv run memy search --config config.test.toml "opis albo cytat" -n 10
 ```
 
 - [ ] Zapytanie po polsku znajduje angielski mem o tym samym znaczeniu i
@@ -121,7 +126,7 @@ uv run memes.py search --config config.test.toml "opis albo cytat" -n 10
 ## GUI
 
 ```sh
-uv run memes.py gui --config config.test.toml
+uv run memy gui --config config.test.toml
 ```
 
 1. [ ] W „Liście” kliknij „Embeduj opisane”. Przycisk działa na całej kolekcji,
@@ -372,7 +377,7 @@ Usuwanie sprawdzaj wyłącznie na kopii kolekcji przygotowanej do weryfikacji.
 ## Pełny przebieg, osobne etapy i wznawianie
 
 ```sh
-uv run memes.py all --config config.test.toml --limit 10
+uv run memy all --config config.test.toml --limit 10
 ```
 
 - [ ] `all` wykonuje kolejno scan, describe i embed, a `scan`, `describe` i

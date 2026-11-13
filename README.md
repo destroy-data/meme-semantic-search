@@ -57,7 +57,7 @@ transcribed by a Whisper-style service and given to the model too. CLI descripti
 client installed and logged in.
 
 ```sh
-uv sync --locked
+uv sync --locked --extra gui   # drop --extra gui for a headless install
 ollama pull bge-m3
 cp config.example.toml config.toml
 ```
@@ -79,7 +79,9 @@ Make sure Ollama is running. Edit `config.toml` before indexing:
    search indexes are removed. Archived rows in `memes` retain their hash and
    description but have an empty `path`.
 3. Set `db_path` to the SQLite file where the collection and its indexes will
-   be stored. It is created on the first scan.
+   be stored. It is created on the first scan. Relative `db_path`, `image_dir`
+   and `[describe].codex_profile` resolve against the config file's directory
+   (after `~` expansion), so commands work from any directory.
 4. Configure `[describe]` using one of the options below. The example file
    defaults to a local `qwen3-vl:8b`; that model is only needed if you keep the
    local description setup (`ollama pull qwen3-vl:8b`).
@@ -140,15 +142,15 @@ are unused. The adapters restrict model tools and send the prepared images and
 description instructions. Check one image before starting a full collection:
 
 ```sh
-uv run memes.py scan
-uv run memes.py describe --limit 1
-uv run memes.py embed --limit 1
-uv run memes.py gui
+uv run memy scan
+uv run memy describe --limit 1
+uv run memy embed --limit 1
+uv run memy gui
 ```
 
 `scan` scans the entire folder and groups duplicates. `--limit 1` applies only
 to the selected `describe` or `embed` stage. Inspect the result in the GUI.
-To print a description, run `uv run memes.py describe --limit 1 -v`;
+To print a description, run `uv run memy describe --limit 1 -v`;
 already completed descriptions are skipped.
 
 ## Indexing and searching
@@ -156,7 +158,7 @@ already completed descriptions are skipped.
 Build or update the collection with:
 
 ```sh
-uv run memes.py all
+uv run memy all
 ```
 
 `all` runs `scan`, `describe`, and `embed` in that order. You can also run each
@@ -164,7 +166,7 @@ stage separately. `scan` finds files and groups duplicates; `describe` generates
 missing descriptions; `embed` builds missing search indexes. Completed work is
 saved incrementally, so an interrupted run can be resumed with the same command.
 You can combine stages in the desired order, putting their flags after the stage
-names: `uv run memes.py scan embed --config config.test.toml --limit 1` scans
+names: `uv run memy scan embed --config config.test.toml --limit 1` scans
 files and embeds saved descriptions without generating new descriptions.
 Shared flags apply to every selected stage that accepts them.
 `all` accepts their flags: `--regroup-only` and `--prune-missing` affect scanning;
@@ -176,9 +178,9 @@ to generate; embedding still processes all eligible descriptions.
 Search from the terminal or open the GUI:
 
 ```sh
-uv run memes.py search "mem z poszerzaniem paska"
-uv run memes.py search "harry potter" --show
-uv run memes.py gui
+uv run memy search "mem z poszerzaniem paska"
+uv run memy search "harry potter" --show
+uv run memy gui
 ```
 
 CLI search prints one matching path per line. `-n` / `--top` changes the number
@@ -190,9 +192,9 @@ Every command accepts `--config FILE` after its name; the default is
 `config.toml`. For example:
 
 ```sh
-uv run memes.py all --config config.test.toml --limit 1
-uv run memes.py describe --config config.test.toml --limit 1
-uv run memes.py search --config config.test.toml "widening the belt"
+uv run memy all --config config.test.toml --limit 1
+uv run memy describe --config config.test.toml --limit 1
+uv run memy search --config config.test.toml "widening the belt"
 ```
 
 ## Using the desktop GUI
@@ -279,20 +281,36 @@ or indexing run to reload collection data. Background embedding from the GUI
 refreshes its table and search results automatically. Browsing Lista and previews
 works without Ollama; semantic search and embedding need it running.
 
+## Using memy as a library
+
+Other projects can depend on memy (for example as an editable path dependency)
+without the `gui` extra. The stable API is:
+
+```python
+from memy.common import connect, load_config
+from memy.search import search
+
+cfg = load_config("/abs/path/to/config.toml")
+con = connect(cfg["db_path"])
+paths = search(con, cfg["embed"], "widening the belt", 10)
+```
+
+`memy.search.search_with_hashes(...)` returns `(hash, path)` pairs instead.
+
 ## Updating and troubleshooting the collection
 
 | Task | Command or setting |
 |---|---|
-| Discover files without calling models | `uv run memes.py scan` |
-| Run scan, describe and embed in order | `uv run memes.py all` |
-| Generate missing descriptions and print them | `uv run memes.py describe -v` |
-| Retry recorded description failures | `uv run memes.py describe --retry-failed` |
-| Describe only memes with no successful description under any settings | `uv run memes.py describe --undescribed-only` |
-| Generate missing embeddings from saved descriptions | `uv run memes.py embed` |
-| Retry descriptions and continue through embedding | `uv run memes.py all --retry-failed` |
-| Recompute similarity groups from stored hashes | Change `phash_threshold`, then run `uv run memes.py scan --regroup-only` |
-| Remove stale paths under `image_dir` | `uv run memes.py scan` |
-| Also check stored paths outside `image_dir` | `uv run memes.py scan --prune-missing` |
+| Discover files without calling models | `uv run memy scan` |
+| Run scan, describe and embed in order | `uv run memy all` |
+| Generate missing descriptions and print them | `uv run memy describe -v` |
+| Retry recorded description failures | `uv run memy describe --retry-failed` |
+| Describe only memes with no successful description under any settings | `uv run memy describe --undescribed-only` |
+| Generate missing embeddings from saved descriptions | `uv run memy embed` |
+| Retry descriptions and continue through embedding | `uv run memy all --retry-failed` |
+| Recompute similarity groups from stored hashes | Change `phash_threshold`, then run `uv run memy scan --regroup-only` |
+| Remove stale paths under `image_dir` | `uv run memy scan` |
+| Also check stored paths outside `image_dir` | `uv run memy scan --prune-missing` |
 
 `describe --undescribed-only` still needs `--retry-failed` for a failed attempt
 under the active settings. `describe`, `embed`, and `all` accept `--limit N`; it
@@ -300,7 +318,7 @@ limits the description and embedding work in that run, not the scanned collectio
 
 Descriptions are stored separately by model, `prompt_version` and
 `effort_level`. Changing those settings normally adds another variant while
-preserving earlier descriptions. `prompt_version` selects a file in `prompts/`.
+preserving earlier descriptions. `prompt_version` selects a file in `src/memy/prompts/`.
 `describe --any-effort` skips memes already described by the same model and
 prompt at any effort level. `--shuffle` randomizes eligible descriptions before
 applying `--limit`, so each run can start with a different sample. With

@@ -9,7 +9,7 @@ import sys
 
 import sqlite_vec
 
-import common
+from memy import common
 
 CANDIDATES = 69  # per-list pool fed into RRF
 RRF_K = 60

@@ -2,30 +2,48 @@
 
 ## Project Structure & Module Organization
 
-Root stages are `scan.py`, `describe.py`, `embed.py`, `search.py`, and `gui.py`. `memes.py` aggregates commands; `common.py` handles configuration, SQLite, and embeddings. Each stage exposes `add_arguments(parser)`, `run(args, cfg)`, and `main(argv=None)`.
+Code lives in the `memy` package under `src/memy/`. Stages are `scan.py`, `describe.py`, `embed.py`, `search.py`, and `gui.py`. `__main__.py` aggregates commands (console script `memy`); `common.py` handles configuration, SQLite, and embeddings; `collection.py` holds GUI-independent collection browsing and deletion. `gui.py` is the only module importing `dearpygui`, which is the optional `gui` extra. Each stage exposes `add_arguments(parser)`, `run(args, cfg)`, and `main(argv=None)`.
 
-`schema.sql` defines storage; `description_schema.json` defines model output. Prompts live in `prompts/`, comparison queries in `sql/`, tooling in `scripts/`, and images in configured `image_dir`. Architecture and historical notes are included below; check implementation claims against code and schemas.
+`src/memy/schema.sql` defines storage; `src/memy/description_schema.json` defines model output. Both are package data found next to the modules. Prompts live in `src/memy/prompts/`, comparison queries in `sql/`, tooling in `scripts/`, and images in configured `image_dir`. Architecture and historical notes are included below; check implementation claims against code and schemas.
 
 ## Build, Test, and Development Commands
 
-1. `uv sync --locked` — install dependencies without changing `uv.lock`; requires Python 3.12+ and includes Dear PyGui.
+1. `uv sync --locked --extra gui` — install dependencies without changing `uv.lock`; requires Python 3.12+. Drop `--extra gui` for a headless install without Dear PyGui.
 2. Create `config.test.toml` from `config.example.toml`; set separate test database/image paths and backend settings.
-3. `uv run memes.py all --config config.test.toml --limit 1` — scan everything in the sample directory; cap describe and embed independently.
-4. `uv run memes.py search --config config.test.toml "widening the belt"` — print matching paths.
-5. `uv run memes.py gui --config config.test.toml` — open the GUI.
+3. `uv run memy all --config config.test.toml --limit 1` — scan everything in the sample directory; cap describe and embed independently.
+4. `uv run memy search --config config.test.toml "widening the belt"` — print matching paths.
+5. `uv run memy gui --config config.test.toml` — open the GUI.
 6. `ruff format .` followed by `ruff check .` — required after Python edits. Ruff must be available separately; `uv sync` does not install it.
 
 ## Coding Style & Naming Conventions
 
 Use four-space indentation, `snake_case` functions/modules, `UPPER_SNAKE_CASE` constants, and type hints. Prefer small functions and stdlib; ask before adding dependencies. HTTP calls use `urllib`.
 
-Search descriptions using `bge-m3` and FTS; preserve resumability and stored work. For prompt changes, read [prompts/guidelines.md](prompts/guidelines.md), preserve the `vcodex1-master` baseline, and create versioned candidates. Bump `prompt_version` when changing the schema.
+Search descriptions using `bge-m3` and FTS; preserve resumability and stored work. For prompt changes, read [src/memy/prompts/guidelines.md](src/memy/prompts/guidelines.md), preserve the `vcodex1-master` baseline, and create versioned candidates. Bump `prompt_version` when changing the schema.
 
 ## Testing Guidelines
 
 No automated suite or coverage target is committed. Follow [TESTING.md](TESTING.md) on copied images; verify repeat runs, retries, duplicates, and affected GUI behavior. Exclude prompt-example hash prefixes `045f3bf5`, `0be81bf3`, `b8bbfce6`, and `6e7aa3c5` from quality comparisons.
 
 GUI deletion and background embedding are implemented despite older deferred-feature notes. GUI embedding uses the newest successful description across configurations; CLI embedding stays within the active prompt.
+
+## Library API
+
+External projects import memy as a library (for example as an editable path
+dependency without the `gui` extra). These functions are the stable API; any
+change to their signature or behavior requires a note in the commit message:
+
+1. `memy.common.load_config(path) -> dict` — relative `db_path`, `image_dir` and
+   `[describe].codex_profile` resolve against the config file's directory after
+   `~` expansion; `exclude_paths` stays relative to `image_dir`.
+2. `memy.common.connect(db_path, *, check_same_thread=True) -> sqlite3.Connection`
+3. `memy.search.search(con, embed_cfg, query, top_n, *, embedding_weight=0.5) -> list[str]`
+4. `memy.search.search_with_hashes(con, embed_cfg, query, top_n, *, embedding_weight=0.5) -> list[tuple[str, str]]`
+
+Everything else may change freely. Library functions must not print, call
+`sys.exit`, or read `sys.argv`; those belong to `run()`/`main()`. Library code
+must not depend on the current working directory: find data files next to the
+package and resolve config paths through `load_config`.
 
 ## Commit & Pull Request Guidelines
 
@@ -51,15 +69,16 @@ or loose keywords ("harry potter, little shits") and gets matching meme files ba
 
 ## Stage → file mapping
 
-One module per stage at the repo root, named after the stage:
+One module per stage in `src/memy/`, named after the stage:
 
 - `scan.py` — Stage 1 scan & dedup
 - `describe.py` — Stage 2 describe (VLM)
 - `embed.py` — Stage 3 embed (bge-m3)
 - `search.py` — Stage 4 search (hybrid vec + FTS, RRF fusion); importable as `search()`
-- `gui.py` — Stage 5 Dear PyGui GUI wrapping stage 4 (extra dep: `dearpygui`)
+- `gui.py` — Stage 5 Dear PyGui GUI wrapping stage 4 (`gui` extra: `dearpygui`)
+- `collection.py` — GUI-independent collection listing, filters and deletion
 - `common.py` — shared plumbing: `load_config`, `connect`, `request_embedding`
-- `memes.py` — CLI: `uv run memes.py <stage> [flags]`; `all` runs
+- `__main__.py` — CLI: `uv run memy <stage> [flags]`; `all` runs
   scan→describe→embed in order
 
 Every stage module exposes the same trio, which is what makes both entry points
@@ -67,10 +86,11 @@ work off one implementation:
 
 - `add_arguments(parser)` — registers the stage's flags (including `--config`)
 - `run(args, cfg)` — does the work against a parsed namespace + loaded config
-- `main(argv=None)` — standalone entry point; `uv run describe.py …` still works
+- `main(argv=None)` — standalone entry point; `uv run python -m memy.describe …` still works
 
-`memes.py` hangs each module's `add_arguments`/`run` off a subparser; `gui` is
-imported lazily there so headless stages never pay for `dearpygui`.
+`__main__.py` hangs each module's `add_arguments`/`run` off a subparser; `gui` is
+imported lazily there so headless stages never pay for `dearpygui`. Without the
+`gui` extra, `memy gui` exits with a hint to run `uv sync --extra gui`.
 
 `schema.sql` is executed by `common.connect(..., init_schema=True)`, which the
 scan stage and `all` pass (idempotent `CREATE ... IF NOT EXISTS`); every other
@@ -78,7 +98,7 @@ stage expects the schema to already exist. `all` calls the `run` function of
 each stage in order and accepts their combined flags. Shared flags such as
 `--limit` and `--model` apply to both relevant stages.
 
-Two more data files at the root, easy to confuse: `schema.sql` is the SQLite
+Two more data files in the package, easy to confuse: `schema.sql` is the SQLite
 DDL above, while `description_schema.json` is the JSON Schema for the VLM's
 output, loaded by `describe.py` and sent to the model on both backends.
 
@@ -634,14 +654,14 @@ genuinely needed, propose it first.
 
 ## Commands
 
-- Run a stage: `uv run memes.py <stage> [--config config.toml] [stage-specific flags]`
-  (or the module directly: `uv run scan.py --regroup-only`)
-- Full incremental pipeline: `uv run memes.py all` (scan → describe → embed)
-- Search: `uv run memes.py search "your query" [-n 20] [--show]`
-- GUI: `uv run memes.py gui`
+- Run a stage: `uv run memy <stage> [--config config.toml] [stage-specific flags]`
+  (or the module directly: `uv run python -m memy.scan --regroup-only`)
+- Full incremental pipeline: `uv run memy all` (scan → describe → embed)
+- Search: `uv run memy search "your query" [-n 20] [--show]`
+- GUI: `uv run memy gui`
 - Lint/format after edits: `ruff format . && ruff check .`
 - Re-describe a single meme while iterating on a prompt:
-  `uv run memes.py describe --path memes/foo.jpg -v`
+  `uv run memy describe --path memes/foo.jpg -v`
 - Alternate configs sit next to `config.toml` (e.g. `config.opus.toml`: the
   `claude-code-cli` backend writing into the same DB); pick one with `--config`.
 - Ad-hoc comparison queries live in `sql/` and run as

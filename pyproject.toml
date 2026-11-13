@@ -1,12 +1,24 @@
 [project]
-name = "meme-semantic-search"
+name = "memes"
 version = "0.1.0"
 description = "The dankest meme semantic search in da hood. Describe the meme you half-remember and get the file back."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "dearpygui>=2.3.1",
     "imagehash>=4.3.2",
     "pillow>=12.3.0",
     "sqlite-vec>=0.1.9",
 ]
+
+[project.optional-dependencies]
+gui = ["dearpygui>=2.3.1"]
+
+[project.scripts]
+memy = "memy.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "memy"

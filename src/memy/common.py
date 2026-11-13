@@ -19,10 +19,27 @@ VIDEO_EXTENSIONS = {".mp4", ".webm", ".mkv", ".mov", ".m4v"}
 FFMPEG_TIMEOUT = 420  # whole-video decode passes; memes are short
 
 
-def load_config(path: str) -> dict:
-    with open(path, "rb") as f:
+def resolve_config_path(value: str, base: Path) -> str:
+    """Expand `~`; resolve a relative path against the config file's directory."""
+    path = Path(value).expanduser()
+    return str(path if path.is_absolute() else base / path)
+
+
+def load_config(path: str | Path) -> dict:
+    """Load the TOML config; relative paths in it resolve against its directory.
+
+    `exclude_paths` stays relative to `image_dir`.
+    """
+    path = Path(path)
+    with path.open("rb") as f:
         cfg = tomllib.load(f)
+    base = path.expanduser().absolute().parent
+    for key in ("db_path", "image_dir"):
+        if key in cfg:
+            cfg[key] = resolve_config_path(cfg[key], base)
     describe = cfg.get("describe", {})
+    if describe.get("codex_profile"):
+        describe["codex_profile"] = resolve_config_path(describe["codex_profile"], base)
     if describe.get("backend") == "codex-cli" and describe.get("codex_profile"):
         load_codex_profile(describe)
     return cfg
