@@ -84,7 +84,8 @@ def collection_files(
         WITH files AS ({indexed_files_sql(con)})
         SELECT m.hash, f.path, COALESCE(m.perceptual_duplicate_of, m.hash),
                f.path = m.path, d.status,
-               EXISTS(SELECT 1 FROM memes_vec v WHERE v.hash = m.hash)
+               EXISTS(SELECT 1 FROM index_entries e
+                      JOIN embeddings v ON v.entry_id = e.id WHERE e.hash = m.hash)
         FROM memes m JOIN files f ON f.hash = m.hash
         LEFT JOIN descriptions d ON d.hash = m.hash AND d.model = ?
             AND d.prompt_version = ? AND d.effort_level IS ?
@@ -124,12 +125,19 @@ def filter_collection(
     ]
 
 
+def has_index(con, digest) -> bool:
+    return bool(
+        con.execute(
+            "SELECT 1 FROM index_entries e JOIN embeddings v ON v.entry_id = e.id "
+            "WHERE e.hash = ?",
+            (digest,),
+        ).fetchone()
+    )
+
+
 def preserve_group_index(con, digest, group):
     """Keep a group's search index when its indexed member loses its last copy."""
-    vector = con.execute(
-        "SELECT embedding FROM memes_vec WHERE hash = ?", (digest,)
-    ).fetchone()
-    if vector is None:
+    if not has_index(con, digest):
         return
     marks = ",".join("?" for _ in group)
     rows = con.execute(
@@ -141,21 +149,14 @@ def preserve_group_index(con, digest, group):
     )
     if not candidates:
         return
-    # Prefer an existing indexed survivor; otherwise retain this group's vector
-    # on an available member. Do not attribute the deleted image's description
-    # to another image or overwrite a survivor's own index.
-    for target in candidates:
-        if con.execute("SELECT 1 FROM memes_vec WHERE hash = ?", (target,)).fetchone():
-            return
-    target = candidates[0]
+    # Prefer an existing indexed survivor; otherwise hand this group's entries
+    # (vectors and FTS, with their provenance) to an available member. Do not
+    # attribute the deleted image's description to another image or overwrite
+    # a survivor's own index.
+    if any(has_index(con, target) for target in candidates):
+        return
     con.execute(
-        "INSERT INTO memes_vec(hash, embedding) VALUES (?, ?)", (target, vector[0])
-    )
-    con.execute("DELETE FROM memes_fts WHERE hash = ?", (target,))
-    con.execute(
-        "INSERT INTO memes_fts(hash, transcription, keywords, template) "
-        "SELECT ?, transcription, keywords, template FROM memes_fts WHERE hash = ?",
-        (target, digest),
+        "UPDATE index_entries SET hash = ? WHERE hash = ?", (candidates[0], digest)
     )
 
 
@@ -214,7 +215,7 @@ def delete_files(con, files, threshold):
                     "WHERE perceptual_duplicate_of = ?",
                     (digest,),
                 )
-                for table in ("descriptions", "memes_fts", "memes_vec", "memes"):
+                for table in ("index_entries", "descriptions", "memes"):
                     con.execute(f"DELETE FROM {table} WHERE hash = ?", (digest,))
         removed.append(path)
     if removed:

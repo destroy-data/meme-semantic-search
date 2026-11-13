@@ -266,7 +266,8 @@ uv run memy search --config config.test.toml "widening the belt"
 6. **Embeduj opisane** in Lista fills missing search indexes in the background
    for the whole collection, regardless of filters or checked files. It uses
    each representative's newest successful description across all models,
-   prompts and effort levels. Existing vectors are skipped. Progress and failures
+   prompts and effort levels, embedded by every configured embedding model.
+   Already-indexed descriptions are skipped. Progress and failures
    are shown; clicking again retries missing embeddings.
 7. **Deleting files.** Select checkboxes in Lista and use **Usuń zaznaczone
    pliki**, or right-click a file for **Usuń plik** / **Usuń resztę z grupy**.
@@ -331,20 +332,30 @@ chosen scanned files and replaces their description for the active settings;
 it bypasses normal queue and duplicate skipping and cannot be combined with
 `--undescribed-only`.
 
-CLI `embed` selects descriptions within the active prompt version, preferring
-the configured model and effort, then the same model at another effort, then
-another model. Its `--model` flag chooses whose descriptions to embed; the
-embedding model itself is configured in `[embed]`. The GUI's **Embeduj opisane**
-instead uses the newest successful description across all configurations.
+A meme can hold several indexed descriptions, each embedded by several models;
+variants never overwrite each other. CLI `embed` indexes, per meme, the
+description matching `[describe]`, falling back to the same model and prompt at
+another effort, then the same prompt, then any description (newest first).
+`--all-variants` indexes every successful description, `--model` changes whose
+descriptions are preferred. The GUI's **Embeduj opisane** uses the newest
+successful description across all configurations, and the comparison view's
+**Opisz i embeduj ten mem** adds the generated variant next to existing ones.
 
-**Changing description settings does not replace existing embeddings.** There
-is one vector per meme; batch embedding runs fill missing entries. The comparison
-view's **Opisz i embeduj ten mem** explicitly replaces that meme's search index
-with the newly generated variant. To rebuild search for the whole collection
-from another description variant, back up the database, clear `memes_vec` and
-`memes_fts`, then run `embed` with the chosen configuration. Saved descriptions
-can be reused. Keep `bge-m3` for both indexing and queries: changing the embedding
-model requires rebuilding the index, and the current schema expects 1024 dimensions.
+Embedding models are `[embed]` plus any `[[embed.extra]]` tables (see
+`config.example.toml`); every embed run fills vectors for all of them, or only
+those given with `--embed-model NAME`.
+
+Search uses `[embed]`'s model and picks one description per meme for the
+`[describe]` variant with the same fallback. For comparisons:
+
+```sh
+uv run memy search --embed-model poldense-400M:F16 "query"       # other embedding model
+uv run memy search --desc-model gpt-6-astra --prompt vcodex3 --effort high --exact "query"
+uv run memy search --all-variants "query"   # every description; best one per meme
+```
+
+Databases from before multiple embeddings lose their old single-vector index on
+first open; run `embed` once to rebuild it from the saved descriptions.
 
 Individual unreadable images, invalid descriptions and timeouts are recorded as
 description failures; use `--retry-failed` after resolving the cause. Codex and

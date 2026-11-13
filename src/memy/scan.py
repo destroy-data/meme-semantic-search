@@ -176,8 +176,9 @@ def remove_stale_paths(
             "(SELECT 1 FROM meme_files f WHERE f.hash = m.hash)"
         )
     ]
-    con.executemany("DELETE FROM memes_fts WHERE hash = ?", [(h,) for h in inactive])
-    con.executemany("DELETE FROM memes_vec WHERE hash = ?", [(h,) for h in inactive])
+    con.executemany(
+        "DELETE FROM index_entries WHERE hash = ?", [(h,) for h in inactive]
+    )
     con.executemany(
         "UPDATE memes SET path = '' WHERE hash = ?", [(h,) for h in inactive]
     )
@@ -209,7 +210,7 @@ def regroup(con: sqlite3.Connection, threshold: int) -> None:
         f"""
         SELECT m.hash, m.phash,
           CASE
-            WHEN EXISTS (SELECT 1 FROM memes_vec WHERE hash = m.hash) THEN {RANK_EMBEDDED}
+            WHEN EXISTS (SELECT 1 FROM index_entries e JOIN embeddings v ON v.entry_id = e.id WHERE e.hash = m.hash) THEN {RANK_EMBEDDED}
             WHEN EXISTS (SELECT 1 FROM descriptions d WHERE d.hash = m.hash AND d.status = 'described') THEN {RANK_DESCRIBED}
             ELSE {RANK_NONE}
           END AS rank

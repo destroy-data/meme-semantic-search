@@ -24,7 +24,13 @@ effort_level = "low"  # "none" | "low" | "medium" | "high"; omit for providers t
 [embed]
 base_url = "http://localhost:11434/v1"
 api_key = "ollama"
-model = "bge-m3"
+model = "bge-m3"  # searched by default
+
+# Optional further embedding models. `embed` adds a vector from each next to
+# bge-m3's; `search --embed-model NAME` / `embed --embed-model NAME` pick one.
+# base_url and api_key default to [embed]'s.
+# [[embed.extra]]
+# model = "hf.co/kprzyb/PolDense-400M-GGUF:F16"
 
 # Optional: transcribe video soundtracks at the start of describe and give the
 # transcript to the describing model with the frames. Omit to send frames only.

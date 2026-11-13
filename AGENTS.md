@@ -25,7 +25,7 @@ Search descriptions using `bge-m3` and FTS; preserve resumability and stored wor
 
 No automated suite or coverage target is committed. Follow [TESTING.md](TESTING.md) on copied images; verify repeat runs, retries, duplicates, and affected GUI behavior. Exclude prompt-example hash prefixes `045f3bf5`, `0be81bf3`, `b8bbfce6`, and `6e7aa3c5` from quality comparisons.
 
-GUI deletion and background embedding are implemented despite older deferred-feature notes. GUI embedding uses the newest successful description across configurations; CLI embedding stays within the active prompt.
+GUI deletion and background embedding are implemented despite older deferred-feature notes. GUI embedding uses the newest successful description across configurations; CLI embedding uses the active config with search's fallback order. Memes hold multiple index entries (descriptions) and vectors (embedding models) side by side.
 
 ## Library API
 
@@ -37,8 +37,13 @@ change to their signature or behavior requires a note in the commit message:
    `[describe].codex_profile` resolve against the config file's directory after
    `~` expansion; `exclude_paths` stays relative to `image_dir`.
 2. `memy.common.connect(db_path, *, check_same_thread=True) -> sqlite3.Connection`
-3. `memy.search.search(con, embed_cfg, query, top_n, *, embedding_weight=0.5) -> list[str]`
-4. `memy.search.search_with_hashes(con, embed_cfg, query, top_n, *, embedding_weight=0.5) -> list[tuple[str, str]]`
+3. `memy.search.search(con, embed_cfg, query, top_n, *, embedding_weight=0.5, variant=None, exact=False) -> list[str]`
+4. `memy.search.search_with_hashes(con, embed_cfg, query, top_n, *, embedding_weight=0.5, variant=None, exact=False) -> list[tuple[str, str]]`
+
+`embed_cfg["model"]` selects which embedding model's vectors are searched.
+`variant` (`{model, prompt_version, effort_level}`, e.g. `cfg["describe"]`)
+picks one description per meme with fallback; `None` searches every indexed
+description, scoring a meme by its best one.
 
 Everything else may change freely. Library functions must not print, call
 `sys.exit`, or read `sys.argv`; those belong to `run()`/`main()`. Library code
@@ -73,7 +78,7 @@ One module per stage in `src/memy/`, named after the stage:
 
 - `scan.py` — Stage 1 scan & dedup
 - `describe.py` — Stage 2 describe (VLM)
-- `embed.py` — Stage 3 embed (bge-m3)
+- `embed.py` — Stage 3 embed (bge-m3 plus optional extra embedding models)
 - `search.py` — Stage 4 search (hybrid vec + FTS, RRF fusion); importable as `search()`
 - `gui.py` — Stage 5 Dear PyGui GUI wrapping stage 4 (`gui` extra: `dearpygui`)
 - `collection.py` — GUI-independent collection listing, filters and deletion
@@ -160,12 +165,35 @@ CREATE TABLE descriptions (
 CREATE UNIQUE INDEX descriptions_config_idx
     ON descriptions(hash, model, prompt_version, IFNULL(effort_level, ''));
 
-CREATE VIRTUAL TABLE memes_fts USING fts5(
-    hash UNINDEXED, transcription, keywords, template,
+-- One row per description indexed for a meme (many variants per meme). The
+-- description's (model, prompt_version, effort_level) is copied for provenance.
+CREATE TABLE index_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,   -- = entries_fts rowid
+    hash TEXT NOT NULL REFERENCES memes(hash),  -- meme it indexes
+    source_hash TEXT NOT NULL,              -- != hash: inherited after a deletion
+    description_id INTEGER NOT NULL,        -- descriptions.id
+    model TEXT NOT NULL, prompt_version TEXT NOT NULL, effort_level TEXT,
+    text_version TEXT NOT NULL,             -- embed.TEXT_VERSION
+    text_sha256 TEXT NOT NULL               -- of the embedded text
+);
+CREATE VIRTUAL TABLE entries_fts USING fts5(
+    transcription, keywords, template,
     tokenize = "unicode61 remove_diacritics 2"          -- Polish diacritics fold to ASCII
 );
-CREATE VIRTUAL TABLE memes_vec USING vec0(hash TEXT PRIMARY KEY, embedding float[1024]);
+-- One vector per (entry, embedding model); dims may differ between models.
+CREATE TABLE embeddings (
+    entry_id INTEGER REFERENCES index_entries(id) ON DELETE CASCADE,
+    embed_model TEXT NOT NULL, dims INTEGER NOT NULL, embedding BLOB NOT NULL,
+    PRIMARY KEY (entry_id, embed_model)
+);
 ```
+
+Vectors are plain float32 BLOBs ranked with sqlite-vec's `vec_distance_l2`
+(brute force, like vec0; ~7000 vectors search in well under a second), which
+allows per-model dimensions and arbitrary variant filters. Databases from the
+single-vector era (`memes_vec`, `memes_fts`) have those tables dropped by
+`common.connect`: they never recorded which description or embedding model
+produced a vector. The next `embed` run rebuilds the index.
 
 Status lives on `descriptions`, not on `memes`. A meme's pipeline position is
 derived, not stored:
@@ -173,15 +201,15 @@ derived, not stored:
 - **scanned** = active row in `memes`, no row in `descriptions` yet (for the active
   config).
 - **described** = at least one `descriptions` row with `status='described'`.
-- **embedded** = row exists in `memes_vec` (and `memes_fts`).
+- **embedded** = at least one `index_entries` row with an `embeddings` vector.
 - **archived** = row in `memes` with no matching row in `meme_files` and an empty
   `path`; descriptions remain, but vector and FTS entries are removed.
 - **failed_describe** = `descriptions` row with `status='failed_describe'` for
   the active config; `--retry-failed` re-picks these.
 
 There is no `failed_embed` state yet — embed errors are transient (Ollama being
-Ollama) and re-running `embed` re-picks any `described` row missing a
-`memes_vec` entry.
+Ollama) and re-running `embed` re-picks any selected description missing an
+entry or a vector from a configured embedding model.
 
 `perceptual_duplicate_of` is orthogonal to describe/embed progress:
 
@@ -211,7 +239,7 @@ Design intent behind this schema — preserve these properties:
   can be tuned freely at any time; regrouping just rewrites this column across
   every row (cheap, uses stored `phash`). Rows that flip from representative to
   duplicate silently drop out of queries; rows that flip the other way re-enter
-  at whatever progress their `descriptions` / `memes_vec` state already reflects.
+  at whatever progress their `descriptions` / index state already reflects.
   Exact duplicates (same sha256) share metadata by the PK, with every physical
   path recorded in `meme_files`; this column is only
   for phash-similar near-duplicates, which can include false positives — the
@@ -253,11 +281,11 @@ invocation:
    the TOML, currently 8). Pick one representative per group (leave its
    `perceptual_duplicate_of` NULL), set `perceptual_duplicate_of` on the rest to
    the representative's hash. Rep-selection prefers the row with the most
-   invested pipeline work: `embedded` (row in `memes_vec`) > any successful
+   invested pipeline work: `embedded` (any vector in `embeddings`) > any successful
    `descriptions` row > nothing, ties broken by hash. That way already-done
    describe/embed work is never orphaned by a regroup. Rows that flip in or out
    of representative silently drop from / re-enter the pipeline; nothing on the
-   `descriptions` or `memes_vec` side is touched.
+   `descriptions` or index side is touched.
 
 Two useful flags: `--regroup-only` skips ingest and just re-runs the grouping
 pass (cheap; useful when tuning `phash_threshold`); `--prune-missing` also
@@ -460,52 +488,72 @@ means retrying a failed row overwrites the old failure cleanly.
 
 ### Stage 3 — embed (`embed`)
 
-For each mem with `perceptual_duplicate_of IS NULL` that has a `status='described'`
-row under the active `prompt_version` and is not yet in `memes_vec`, pick one
-description: the exact `(model, effort_level)` from `[describe]` if present,
-else the same model at any effort, else any model (newest row wins ties).
-`prompt_version` never falls back — a prompt swap is a deliberate experiment.
+A meme can carry any number of indexed descriptions (one `index_entries` row
+each), and each entry any number of vectors (one per embedding model). Variants
+coexist; nothing is replaced except stale work.
+
+Selection, for representatives with an active file and successful descriptions:
+
+- default — per meme, the description search would pick for `[describe]`
+  (`embed.FALLBACK_ORDER`): exact `(model, prompt_version, effort_level)`, then
+  same model and prompt at another effort, then same prompt with another model,
+  then anything; newest wins ties. Falling back across prompts keeps every
+  described meme searchable; `--exact` search isolates one variant for A/B.
+- `--all-variants` — every successful description.
+- GUI **Embeduj opisane** — per meme, the newest success across all configs.
+
+Embedding models: `[embed]` plus optional `[[embed.extra]]` tables (each needs
+`model`; `base_url`/`api_key` default to `[embed]`'s). Every run embeds each
+selected description with every configured model; `--embed-model NAME`
+(repeatable) restricts it. Dimensions are recorded per vector, not fixed.
+
 Build the embedding text (`template` unless it is `"unknown"`, `scene`,
 `the_clue`, `transcription`, `keywords + humor_type`, joined with newlines;
 template names drift between runs, so they help the vector but are unreliable
-as FTS tokens, and the shared `"unknown"` would pull memes together), embed with
-`bge-m3` via the Ollama embeddings endpoint (1024 dims), L2-normalize the vector
-(vec0's default L2 distance then ranks identically to cosine; Ollama doesn't
-guarantee normalized output), insert into `memes_vec`, and (re-)insert
-`transcription`, `keywords + humor_type`, `template` into `memes_fts`. Per-row
-commit keeps the fts + vec inserts atomic and the run resumable.
+as FTS tokens, and the shared `"unknown"` would pull memes together), embed via
+the OpenAI-compatible embeddings endpoint, L2-normalize the vector (L2 distance
+then ranks identically to cosine; Ollama doesn't guarantee normalized output).
+The entry and its `entries_fts` row (`transcription`, `keywords + humor_type`,
+`template`) commit together; each model's vector commits separately, so one
+failing model keeps the others' work.
 
-Because the `[describe]` config drives which variant gets indexed, running
-`embed --model <alt>` (or editing the config) picks a different set of
-`descriptions` rows without touching prior work. There is only ever one
-embedding per mem (PK on `memes_vec.hash`), so switching variants means the old
-`memes_vec` row must be cleared first if you want the new one to take effect
-— CLI embedding does not replace it automatically. The GUI comparison action
-  replaces the single vector and FTS entry with the selected description's index.
-  Independent coexisting embedding variants remain planned in [TODO.md](TODO.md).
+Staleness: `describe` replaces a row via `INSERT OR REPLACE`, which assigns a
+new `descriptions.id`. An own entry pointing at a missing id is ignored by
+search and deleted at the start of the next embed run, which then indexes the
+new row. Entries whose `text_version`/`text_sha256` no longer match
+`embed.TEXT_VERSION`/the composed text are rebuilt. Bump `TEXT_VERSION` when
+changing `embedding_text()` or `fts_fields()`.
 
 Embed errors are logged and skipped (no `failed_embed` status stored) — they're
-almost always transient endpoint issues, and re-running `embed` re-picks any
-`described` mem missing from `memes_vec`.
+almost always transient endpoint issues, and re-running `embed` re-picks
+anything still missing.
 
-CLI flags: `--limit N` and `--model` (override which `[describe].model`'s rows
-get embedded, without editing the config).
+CLI flags: `--limit N` (descriptions), `--model` (override `[describe].model`
+for selection), `--all-variants`, `--embed-model NAME`.
 
 ### Stage 4 — search (`search`)
 
 CLI: takes a free-text query, returns top-N file paths.
 
-1. Embed the query with the same model.
-2. Run two retrievals: KNN over `memes_vec`, and FTS5 `MATCH` over `memes_fts`
-   (sanitize/escape the user query for FTS5 syntax). Join both back to `memes`
-   and drop rows where `perceptual_duplicate_of IS NOT NULL` so near-duplicates
-   don't clutter results.
-3. Fuse with Reciprocal Rank Fusion:
+1. Embed the query with the selected embedding model (`[embed]`, or
+   `--embed-model NAME` from `[embed]`/`[[embed.extra]]`).
+2. Select index entries: by default one per meme for the `[describe]` variant
+   with the same fallback order as embed (`--desc-model`, `--prompt`,
+   `--effort`, `""` = no effort, override parts of it); `--exact` keeps only
+   that variant; `--all-variants` uses every entry and scores a meme by its
+   best one. Only entries with a vector from the selected model count, so both
+   retrievals rank the same descriptions.
+3. Run two retrievals over those entries: nearest vectors (`vec_distance_l2`)
+   and FTS5 `MATCH` over `entries_fts` (sanitize/escape the user query for FTS5
+   syntax), each collapsed to the best entry per meme. Rows with
+   `perceptual_duplicate_of IS NOT NULL` are dropped so near-duplicates don't
+   clutter results.
+4. Fuse with Reciprocal Rank Fusion:
    `score[id] = Σ weight / (60 + rank_in_list)` across both lists. Default equal
    weights preserve the original ranking. `search()` / `search_with_hashes()`
    accept keyword-only `embedding_weight` (0–1; default 0.5); the FTS weight is
    `1 - embedding_weight`. A zero-weight source is skipped entirely.
-4. Output: top-N paths, one per line (composable with `imv`/`feh`/`xargs`),
+5. Output: top-N paths, one per line (composable with `imv`/`feh`/`xargs`),
    plus a `--show` flag that opens results in an image viewer.
 
 ### Stage 5 — GUI (`gui`)
@@ -513,8 +561,11 @@ CLI: takes a free-text query, returns top-N file paths.
 The GUI supports finding, previewing and copying memes, inspecting description
 variants, browsing the collection, reviewing duplicates, deleting files and
 embedding existing descriptions. The comparison view also supports generating
-and embedding a selected description variant, with a background queue. Scanning
-from the GUI remains deferred.
+and embedding a selected description variant, with a background queue; the new
+entry is added next to existing ones with every configured embedding model.
+GUI search uses `[embed]` and the `[describe]` variant with fallback, so a
+compared variant only affects GUI results where it wins that fallback.
+Scanning from the GUI remains deferred.
 
 **Implemented in the GUI:**
 
@@ -522,9 +573,9 @@ In Lista, **Embeduj opisane** runs the existing embed stage in a background
 thread with its own SQLite connection and progress sent to the render thread.
 It fills missing vector/FTS indexes across the collection regardless of selection,
 filters, prompt or model, using each representative's newest successful description
-across all configurations, without preferring the active model or effort. CLI
-embedding keeps its active-prompt selection and model/effort fallback rules.
-Existing vectors and non-representatives are skipped. Completion refreshes the
+across all configurations, without preferring the active model or effort, with
+every configured embedding model. CLI embedding keeps its fallback rules.
+Already-indexed descriptions and non-representatives are skipped. Completion refreshes the
 collection and search; errors can be retried. Deletion is blocked during the run.
 
 - A `FTS / Embeddingi` slider sits between the shared query field and the
@@ -576,14 +627,15 @@ from `memes` until the next scan.
   file and confirm the explicit list of other available group paths, including
   identical copies. All deletion actions require confirmation and recheck
   SHA-256 against the database immediately before unlinking each file.
-- Reflect successful deletions in `memes`, `descriptions`, `memes_fts` and
-  `memes_vec`, and refresh visible results and groups. A filesystem failure
+- Reflect successful deletions in `memes`, `descriptions`, `index_entries`
+  (with their FTS rows and vectors), and refresh visible results and groups. A filesystem failure
   must be reported for that file and must not discard its database records.
   Regroup remaining rows after deletion, using the existing representative
   selection rules; preserve all work belonging to surviving memes. If the last
   copy of an indexed member is deleted and the remaining group has no vector,
-  transfer its vector and FTS text to an available surviving member before
-  removing its database row. Preserve group membership across the entire batch.
+  re-point all its index entries (vectors, FTS text, provenance; `source_hash`
+  keeps the deleted meme) to an available surviving member before removing its
+  database row. Preserve group membership across the entire batch.
   This retains group searchability without inference; the inherited index is
   based on the deleted similar image, not a new description of the survivor.
   Do not overwrite a survivor's existing index or copy description rows between

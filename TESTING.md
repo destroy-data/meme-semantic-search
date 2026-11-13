@@ -98,15 +98,24 @@ uv run memy describe --config config.test.toml --limit 10 -v
 uv run memy embed --config config.test.toml
 ```
 
-- [ ] Każdy opisany reprezentant aktywnego `prompt_version` dostaje po jednym
-  wierszu w `memes_vec` i `memes_fts`.
+- [ ] Każdy opisany reprezentant dostaje wpis w `index_entries` (z wierszem
+  `entries_fts` o tym samym rowid) dla opisu wybranego według kolejności
+  awaryjnej, oraz wektor w `embeddings` od każdego modelu z `[embed]` i
+  `[[embed.extra]]`.
+- [ ] `embed --all-variants` dodaje wpisy dla pozostałych opisów; istniejące
+  wpisy i wektory zostają bez zmian.
+- [ ] Ponowne opisanie mema (`describe --path`) daje nowy `descriptions.id`;
+  stary wpis znika z wyszukiwania, a następny embed go zastępuje.
+- [ ] `search --exact` z innym wariantem (`--desc-model/--prompt/--effort`)
+  zwraca tylko memy z tym wariantem; `--embed-model` używa wektorów innego
+  modelu.
 - [ ] W FTS znajdują się transkrypcja, tagi i typ humoru; w tekście embeddingu
   są scena oraz `the_clue`.
 - [ ] Drugi bieg nie wywołuje endpointu embeddingów dla już osadzonych memów.
 - [ ] Tymczasowo zatrzymaj endpoint embeddingów: błędny mem jest pomijany, a
   po przywróceniu endpointu następny bieg go uzupełnia.
-- [ ] Po ręcznym wyczyszczeniu `memes_vec` i `memes_fts` ponowny embed buduje
-  oba indeksy z wybranego wariantu opisów.
+- [ ] Po ręcznym usunięciu wierszy `index_entries` ponowny embed buduje FTS i
+  wektory od nowa (trigger usuwa wiersze FTS, kaskada usuwa wektory).
 
 ## Wyszukiwanie CLI
 

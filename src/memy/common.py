@@ -14,7 +14,6 @@ from pathlib import Path
 import sqlite_vec
 
 REQUEST_TIMEOUT = 69  # Nice
-EMBEDDING_DIM = 1024
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mkv", ".mov", ".m4v"}
 FFMPEG_TIMEOUT = 420  # whole-video decode passes; memes are short
 
@@ -120,9 +119,13 @@ def connect(
         )
 
     # Existing databases also gain tables added later (all DDL is idempotent).
-    if init_schema or (has_table("memes") and not has_table("audio_transcripts")):
+    if init_schema or (has_table("memes") and not has_table("index_entries")):
         # Seed legacy databases once; archived memes must not regain stale paths.
         had_meme_files = has_table("meme_files")
+        # The single-vector index never recorded which description or embedding
+        # model produced a vector; drop it, the next embed run rebuilds it.
+        con.execute("DROP TABLE IF EXISTS memes_vec")
+        con.execute("DROP TABLE IF EXISTS memes_fts")
         con.executescript(Path(__file__).with_name("schema.sql").read_text())
         if not had_meme_files:
             con.execute(
@@ -141,6 +144,33 @@ def connect(
     return con
 
 
+def embed_configs(cfg: dict) -> list[dict]:
+    """`[embed]` first, then each `[[embed.extra]]`; extras inherit its endpoint."""
+    primary = {k: v for k, v in cfg["embed"].items() if k != "extra"}
+    configs = [primary]
+    for extra in cfg["embed"].get("extra", []):
+        configs.append(
+            {"base_url": primary["base_url"], "api_key": primary["api_key"], **extra}
+        )
+    models = [c["model"] for c in configs]
+    if len(set(models)) != len(models):
+        raise ValueError(f"duplicate embedding models in config: {models}")
+    return configs
+
+
+def embed_config(cfg: dict, model: str | None = None) -> dict:
+    """The configured embedding model named `model`; `[embed]` when None."""
+    configs = embed_configs(cfg)
+    if model is None:
+        return configs[0]
+    for config in configs:
+        if config["model"] == model:
+            return config
+    raise ValueError(
+        f"embedding model {model!r} not configured; have {[c['model'] for c in configs]}"
+    )
+
+
 def request_embedding(cfg: dict, text: str) -> list[float]:
     payload = {"model": cfg["model"], "input": text}
     req = urllib.request.Request(
@@ -154,8 +184,8 @@ def request_embedding(cfg: dict, text: str) -> list[float]:
     with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
         body = json.load(resp)
     embedding = body["data"][0]["embedding"]
-    if len(embedding) != EMBEDDING_DIM:
-        raise ValueError(f"expected {EMBEDDING_DIM} dims, got {len(embedding)}")
+    if not embedding:
+        raise ValueError("empty embedding")
     # Normalize so vec0's default L2 distance ranks identically to cosine;
     # Ollama doesn't guarantee normalized output.
     norm = math.sqrt(sum(x * x for x in embedding))

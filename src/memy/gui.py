@@ -701,6 +701,7 @@ class App:
                 query,
                 self.top_n,
                 embedding_weight=self.embedding_weight,
+                variant=self.cfg["describe"],
             )
             paths, hidden = current_result_paths(hits)
         # Endpoint down or timing out (OSError), a malformed or wrong-sized
@@ -1148,8 +1149,8 @@ class App:
                 embed_stage.embed_descriptions(
                     con,
                     self.cfg["describe"],
-                    self.cfg["embed"],
-                    all_descriptions=True,
+                    common.embed_configs(self.cfg),
+                    selection="newest",
                     progress=lambda done, failed, total: self.embedding_events.put(
                         ("progress", (done, failed, total))
                     ),
@@ -1446,14 +1447,14 @@ class App:
         # NULL must clear the active configuration's effort, not inherit it.
         cfg["effort_level"] = effort
         job = (self.preview_path, self.preview_hash, label)
-        self.compare_queue.append((job, cfg, deepcopy(self.cfg["embed"])))
+        self.compare_queue.append((job, cfg, common.embed_configs(self.cfg)))
         self.start_next_comparison_generation()
 
     def start_next_comparison_generation(self) -> None:
         if self.compare_job is not None or not self.compare_queue:
             self.update_comparison_queue()
             return
-        job, cfg, embed_cfg = self.compare_queue.popleft()
+        job, cfg, embed_cfgs = self.compare_queue.popleft()
         self.compare_job = job
         self.compare_job_messages[job[1:]] = "Opisywanie…"
         dpg.configure_item("embed_described", enabled=False)
@@ -1462,12 +1463,12 @@ class App:
         self.update_comparison_queue()
         Thread(
             target=self.comparison_generation_worker,
-            args=(job, cfg, embed_cfg),
+            args=(job, cfg, embed_cfgs),
             daemon=True,
         ).start()
 
     def comparison_generation_worker(
-        self, job: tuple[str, str, str], cfg: dict, embed_cfg: dict
+        self, job: tuple[str, str, str], cfg: dict, embed_cfgs: list[dict]
     ) -> None:
         path, digest, _label = job
         error = None
@@ -1487,17 +1488,17 @@ class App:
                     cfg.get("effort_level"),
                 )
 
-                def successful_description() -> str | None:
+                def successful_description() -> int | None:
                     row = con.execute(
-                        "SELECT description_json FROM descriptions WHERE hash = ? "
+                        "SELECT id FROM descriptions WHERE hash = ? "
                         "AND model = ? AND prompt_version = ? AND effort_level IS ? "
                         "AND status = 'described'",
                         parameters,
                     ).fetchone()
                     return row[0] if row else None
 
-                raw = successful_description()
-                if raw is None:
+                description_id = successful_description()
+                if description_id is None:
                     backend = cfg.get("backend", "openai")
                     if backend not in (
                         "openai",
@@ -1530,8 +1531,8 @@ class App:
                             lambda: False,
                             self.cfg.get("transcribe"),
                         )
-                    raw = successful_description()
-                    if raw is None:
+                    description_id = successful_description()
+                    if description_id is None:
                         row = con.execute(
                             "SELECT error FROM descriptions WHERE hash = ? AND model = ? "
                             "AND prompt_version = ? AND effort_level IS ?",
@@ -1541,7 +1542,7 @@ class App:
                 # Committed description becomes visible before the embedding request.
                 self.compare_job_events.put(("described", job, None))
                 stage = "embedding"
-                embed_stage.embed_description(con, digest, raw, embed_cfg, replace=True)
+                embed_stage.index_description(con, description_id, embed_cfgs)
         except (Exception, SystemExit) as exc:  # noqa: BLE001
             error = str(exc)
         finally:
