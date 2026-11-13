@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -19,7 +20,7 @@ from queue import Empty, SimpleQueue
 from threading import Thread
 
 import dearpygui.dearpygui as dpg
-from PIL import Image
+from PIL import Image, ImageOps
 
 import common
 import describe as describe_stage
@@ -71,19 +72,6 @@ CTRL_KEYS = (dpg.mvKey_ModCtrl, dpg.mvKey_LControl, dpg.mvKey_RControl)
 SHIFT_KEYS = (dpg.mvKey_ModShift, dpg.mvKey_LShift, dpg.mvKey_RShift)
 ALT_KEYS = (dpg.mvKey_ModAlt, dpg.mvKey_LAlt, dpg.mvKey_RAlt)
 
-# Wayland/X11 clipboard wants the real image mime type, not a file path.
-CLIPBOARD_MIME = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".mp4": "video/mp4",
-    ".m4v": "video/mp4",
-    ".webm": "video/webm",
-    ".mkv": "video/x-matroska",
-    ".mov": "video/quicktime",
-}
 
 SHORTCUTS = [
     ("Enter", "szukaj teraz (i tak szuka samo po chwili)"),
@@ -128,8 +116,15 @@ def description_fields(raw: str | None) -> list[tuple[str | None, str]]:
 
 
 def copy_image_to_clipboard(path: str) -> str:
-    """Put the image bytes (not the path) on the clipboard; returns a status line."""
-    mime = CLIPBOARD_MIME.get(os.path.splitext(path)[1].lower(), "image/png")
+    """Put the meme on the clipboard; returns a status line.
+
+    Still images go as PNG bytes: Chromium/Electron and Qt (Telegram) apps
+    read pasted images only as image/png, so JPEG/WebP bytes paste nothing.
+    Videos and animations go as a file reference (text/uri-list), as file
+    managers copy files: apps reject video bytes, and PNG would drop frames.
+    """
+    as_file = is_animation(path)
+    mime = "text/uri-list" if as_file else "image/png"
     if shutil.which("wl-copy"):
         cmd = ["wl-copy", "-t", mime]
     elif shutil.which("xclip"):
@@ -137,9 +132,22 @@ def copy_image_to_clipboard(path: str) -> str:
     else:
         return "brak wl-copy / xclip — nie mam czym kopiować"
     try:
-        with open(path, "rb") as fh:
-            # Both tools daemonize themselves once they own the selection.
-            subprocess.run(cmd, stdin=fh, check=True, timeout=5)
+        if as_file:
+            data = (Path(path).resolve().as_uri() + "\r\n").encode()
+        else:
+            with Image.open(path) as image:
+                if image.format == "PNG":
+                    data = Path(path).read_bytes()
+                else:
+                    # PNG carries no EXIF orientation and cannot store CMYK.
+                    image = ImageOps.exif_transpose(image)
+                    if image.mode not in ("1", "L", "LA", "I", "P", "RGB", "RGBA"):
+                        image = image.convert("RGBA")
+                    buffer = io.BytesIO()
+                    image.save(buffer, format="PNG")
+                    data = buffer.getvalue()
+        # Both tools daemonize themselves once they own the selection.
+        subprocess.run(cmd, input=data, check=True, timeout=5)
     except (OSError, subprocess.SubprocessError) as e:
         return f"kopiowanie nie wyszło: {e}"
     kind = "film" if common.is_video(path) else "obrazek"

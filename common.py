@@ -234,7 +234,9 @@ def video_middle_frame(path: Path, outdir: Path) -> Path:
             "-show_entries",
             "stream=nb_read_packets",
             "-of",
-            "csv=p=0",
+            # csv appends an empty field per side data entry (rotated phone
+            # videos print "283,"); the default writer prints the bare value
+            "default=noprint_wrappers=1:nokey=1",
             str(path),
         ],
     ).strip()
