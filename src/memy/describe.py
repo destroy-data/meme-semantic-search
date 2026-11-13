@@ -48,8 +48,16 @@ REQUEST_TIMEOUT = 4 * 69  # Somewhat nice
 # A spent subscription quota says nothing about the meme, so it must not become
 # a failed_describe row: that row would count as "done" and the retry would be
 # skipped. Wait the window out and re-send the same image instead.
-USAGE_LIMIT_WAIT = 3600 // 4
+USAGE_LIMIT_WAIT = 3600 // 2
 USAGE_LIMIT_API_ERROR = "usage_limit_reached"
+# Typed `api_error` kinds meaning the request never reached the model (no
+# network, DNS). Like a spent quota they say nothing about the image.
+CLAUDE_TRANSPORT_ERRORS = {"connection_failed"}
+# Anthropic's output filter (typically verbatim song lyrics copied from a video
+# transcript). The envelope carries no typed discriminator for it (api_error and
+# api_error_status are null, the logged message only says error="unknown"), so
+# this one matches the result text. A miss just records failed_describe as before.
+CLAUDE_CONTENT_FILTER = "Output blocked by content filtering policy"
 TRANSCRIBE_TIMEOUT = 420  # the first request may have to load the ASR model
 # Whisper fills music and silence with placeholders and stock phrases from its
 # training subtitles. Compared after dropping *...*, [...], (...), punctuation
@@ -194,6 +202,7 @@ def prepare_description_images(path: Path, workdir: Path) -> list[DescriptionIma
 class Transcript:
     has_audio: bool  # False: the video has no audio stream
     text: str  # recognised speech, one segment per line; "" = none
+    withheld: bool = False  # text left out after the output filter blocked it
 
 
 def description_image_prompt(
@@ -219,6 +228,12 @@ def audio_note(transcript: Transcript | None) -> str:
         return "Ścieżka dźwiękowa filmu nie została dołączona."
     if not transcript.has_audio:
         return "Film nie ma ścieżki dźwiękowej."
+    if transcript.withheld:
+        return (
+            "Film ma ścieżkę dźwiękową, ale jej transkrypcja została pominięta "
+            "(prawdopodobnie tekst piosenki). Nie zgaduj, co słychać; pole "
+            "transcription zawiera wyłącznie tekst widoczny na klatkach."
+        )
     if not transcript.text:
         return (
             "Automatyczna transkrypcja nie rozpoznała w ścieżce dźwiękowej mowy "
@@ -228,7 +243,15 @@ def audio_note(transcript: Transcript | None) -> str:
         "Automatyczna transkrypcja ścieżki dźwiękowej filmu (może zawierać błędy; "
         f"♪ oznacza śpiew):\n{transcript.text}\n"
         "Uwzględnij w opisie mema to, co słychać. Pole transcription zawiera "
-        "wyłącznie tekst widoczny na klatkach."
+        "tekst widoczny na klatkach, a po nim, oddzielony pustą linią, tekst "
+        "tej transkrypcji (popraw tylko oczywiste błędy rozpoznawania mowy). "
+        "Wyjątek: nie przepisuj tekstu piosenek do transcription ani do innych "
+        "pól. Dotyczy to fragmentów oznaczonych ♪, ale też tekstu bez tego "
+        "znacznika, który wygląda na śpiewany (wersy, rymy, refren, znany "
+        "utwór) — transkrypcja często nie oznacza śpiewu. Jeśli rozpoznajesz "
+        "utwór, podaj "
+        "wykonawcę i tytuł w scene i keywords; jeśli nie, opisz krótko, że w "
+        "tle leci piosenka i o czym jest."
     )
 
 
@@ -327,8 +350,14 @@ def request_description(
             "Authorization": f"Bearer {cfg['api_key']}",
         },
     )
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-        body = json.load(resp)
+    try:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            body = json.load(resp)
+    except urllib.error.HTTPError:
+        raise
+    except urllib.error.URLError as e:
+        # Unreachable endpoint (no network, DNS, refused): not the image's fault.
+        raise DescriptionCLIError(f"{cfg['base_url']} unreachable: {e.reason}") from e
     return body["choices"][0]["message"]["content"], body.get("usage")
 
 
@@ -521,6 +550,10 @@ def request_description_cli(
         )
         if is_usage_limit(envelope):
             raise UsageLimitError(detail)
+        if envelope.get("api_error") in CLAUDE_TRANSPORT_ERRORS:
+            raise DescriptionCLIError(f"claude: {detail}")
+        if CLAUDE_CONTENT_FILTER in str(envelope.get("result", "")):
+            raise ContentFilterError(f"claude: {detail}")
         raise RuntimeError(f"claude: {detail}")
     data = envelope.get("structured_output")
     if not isinstance(data, dict) or not data:
@@ -532,6 +565,10 @@ def request_description_cli(
 
 class DescriptionCLIError(RuntimeError):
     """An incomplete CLI run must not mark images as done (quota/auth/network)."""
+
+
+class ContentFilterError(RuntimeError):
+    """The provider's output filter blocked the response; a per-image failure."""
 
 
 class CodexCLIError(DescriptionCLIError):
@@ -1183,9 +1220,29 @@ def describe_rows(
                         )
                     if backend == "claude-code-cli":
                         started = time.monotonic()
-                        raw, usage = request_description_cli(
-                            cfg, image_prompt, images, verbose=verbose
-                        )
+                        try:
+                            raw, usage = request_description_cli(
+                                cfg, image_prompt, images, verbose=verbose
+                            )
+                        except ContentFilterError as e:
+                            if transcript is None or not transcript.text:
+                                raise
+                            # Usually lyrics copied from the transcript: retry
+                            # once without it, so speech is not indexed for
+                            # this meme. A second block is a normal failure.
+                            print(
+                                f"{time.strftime('%H:%M:%S')} {Path(path).name}: "
+                                f"{e}; retrying without the transcript",
+                                file=sys.stderr,
+                            )
+                            transcript = Transcript(True, "", withheld=True)
+                            image_prompt = description_image_prompt(
+                                prompt, images, transcript
+                            )
+                            started = time.monotonic()
+                            raw, usage = request_description_cli(
+                                cfg, image_prompt, images, verbose=verbose
+                            )
                     elif backend == "codex-cli":
                         started = time.monotonic()
                         raw, usage = request_description_codex_cli(

@@ -412,6 +412,8 @@ means retrying a failed row overwrites the old failure cleanly.
   "usage_limit_reached"` or `api_error_status == 429`), never on the `result`
   text, whose wording changes between CLI releases. On a hit, no row is written,
   the loop sleeps `USAGE_LIMIT_WAIT` and re-sends the same image.
+  A typed `api_error == "connection_failed"` (no network, DNS) and an
+  unreachable HTTP `base_url` stop the run without writing a row.
 - Enforce valid JSON output via OpenAI-compatible `response_format:
   json_schema`. Both Ollama and Anthropic-compatible endpoints honor it.
 - The schema itself lives in `description_schema.json`, not in `describe.py`,
@@ -444,7 +446,15 @@ means retrying a failed row overwrites the old failure cleanly.
   `text`; `''` = no recognised speech) and reused by every description config;
   delete rows to re-transcribe. The describing model gets the frames plus the
   transcript (or a note: no audio stream / no speech / audio not included), on
-  every backend. The transcript itself is not indexed. An unreachable or
+  every backend, and is told to append the transcript (after a blank line) to
+  `transcription`, so speech is indexed through FTS and the embedding text.
+  Sung lyrics (`♪`) are excluded: the model names artist and title in `scene`
+  and `keywords` instead, since verbatim lyrics trip Anthropic's output filter.
+  Whisper often omits `♪`, so the model is also told to skip unmarked sung text.
+  If `claude-code-cli` still hits the filter (matched on result text; the
+  envelope has no typed field for it), the image is retried once with the
+  transcript withheld; a second block is a normal `failed_describe`.
+  Descriptions made before this instruction lack it. An unreachable or
   failing ASR service stops the run without writing a row; an audio extraction
   failure is a per-image `failed_describe`. `common.connect` creates the table
   in existing databases. Temporary
