@@ -8,7 +8,7 @@ Stage modules also stay runnable on their own.
 import argparse
 import sys
 
-from memy import common, describe, embed, scan, search
+from memy import common, describe, embed, i18n, scan, search
 
 STAGES = [
     ("scan", scan, "scan images into the DB and regroup near-duplicates"),
@@ -136,6 +136,7 @@ def main(argv: list[str] | None = None) -> None:
 
     gui_parser = sub.add_parser("gui", help="Dear PyGui frontend over search")
     common.add_config_argument(gui_parser)
+    i18n.add_language_argument(gui_parser)
     gui_parser.set_defaults(run=run_gui)
 
     args = parser.parse_args(argv)

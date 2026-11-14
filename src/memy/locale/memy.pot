@@ -1,0 +1,655 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the memy package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: memy\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-11-14 12:15+0100\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
+
+#: src/memy/collection.py:192
+msgid "the file is gone or its content changed (SHA-256)"
+msgstr ""
+
+#: src/memy/gui.py:71
+msgid "Model"
+msgstr ""
+
+#: src/memy/gui.py:72
+msgid "Prompt"
+msgstr ""
+
+#: src/memy/gui.py:73
+msgid "Reasoning effort"
+msgstr ""
+
+#: src/memy/gui.py:75
+msgid "Compare"
+msgstr ""
+
+#: src/memy/gui.py:75
+msgid "List"
+msgstr ""
+
+#: src/memy/gui.py:75
+msgid "Search"
+msgstr ""
+
+#: src/memy/gui.py:77
+msgid "All"
+msgstr ""
+
+#: src/memy/gui.py:78
+msgid "Duplicates"
+msgstr ""
+
+#: src/memy/gui.py:79 src/memy/gui.py:426 src/memy/gui.py:1003
+msgid "Identical copies"
+msgstr ""
+
+#: src/memy/gui.py:80
+msgid "Undescribed"
+msgstr ""
+
+#: src/memy/gui.py:81
+msgid "Errors"
+msgstr ""
+
+#: src/memy/gui.py:93
+msgid "search now (it also searches by itself after a moment)"
+msgstr ""
+
+#: src/memy/gui.py:94
+msgid "previous / next meme"
+msgstr ""
+
+#: src/memy/gui.py:95
+#, python-brace-format
+msgid "jump by {n} results"
+msgstr ""
+
+#: src/memy/gui.py:96
+msgid "first / last result"
+msgstr ""
+
+#: src/memy/gui.py:97
+msgid "jump to result N"
+msgstr ""
+
+#: src/memy/gui.py:98
+msgid "copy IMAGE / VIDEO to the clipboard (paste in a chat)"
+msgstr ""
+
+#: src/memy/gui.py:99
+msgid "copy the file path"
+msgstr ""
+
+#: src/memy/gui.py:100
+msgid "open in an image viewer"
+msgstr ""
+
+#: src/memy/gui.py:101
+msgid "next / previous description variant"
+msgstr ""
+
+#: src/memy/gui.py:102
+msgid "show / hide the description"
+msgstr ""
+
+#: src/memy/gui.py:103
+msgid "full-width preview"
+msgstr ""
+
+#: src/memy/gui.py:104
+#, python-brace-format
+msgid "more / fewer results (by {n})"
+msgstr ""
+
+#: src/memy/gui.py:105
+msgid "back / clear the query / quit"
+msgstr ""
+
+#: src/memy/gui.py:106
+msgid "quit"
+msgstr ""
+
+#: src/memy/gui.py:107
+msgid "this cheat sheet"
+msgstr ""
+
+#: src/memy/gui.py:117
+msgid "(no description)"
+msgstr ""
+
+#: src/memy/gui.py:131
+msgid "(empty description)"
+msgstr ""
+
+#: src/memy/gui.py:149
+msgid "no wl-copy / xclip — nothing to copy with"
+msgstr ""
+
+#: src/memy/gui.py:168
+#, python-brace-format
+msgid "copying failed: {error}"
+msgstr ""
+
+#: src/memy/gui.py:169
+#, python-brace-format
+msgid "copied video: {name}"
+msgstr ""
+
+#: src/memy/gui.py:170
+#, python-brace-format
+msgid "copied image: {name}"
+msgstr ""
+
+#: src/memy/gui.py:190
+msgid "no image viewer found"
+msgstr ""
+
+#: src/memy/gui.py:197
+#, python-brace-format
+msgid "opening in {viewer}"
+msgstr ""
+
+#: src/memy/gui.py:245
+msgid "Any"
+msgstr ""
+
+#: src/memy/gui.py:246
+msgid "Not set"
+msgstr ""
+
+#: src/memy/gui.py:323 src/memy/gui.py:1134
+msgid "describe a meme…"
+msgstr ""
+
+#: src/memy/gui.py:341
+msgid ""
+"Left: text matching (FTS).\n"
+"Right: similarity of meaning (embeddings).\n"
+"Middle: both weigh the same."
+msgstr ""
+
+#: src/memy/gui.py:370
+msgid "Embed described"
+msgstr ""
+
+#: src/memy/gui.py:377
+msgid ""
+"Fills in missing embeddings across the whole collection,\n"
+"regardless of prompt, model, filters and selection.\n"
+"Picks the newest successful description of each representative."
+msgstr ""
+
+#: src/memy/gui.py:385 src/memy/gui.py:999
+msgid "Delete selected files"
+msgstr ""
+
+#: src/memy/gui.py:402
+msgid "Drag to resize the panels."
+msgstr ""
+
+#: src/memy/gui.py:419
+msgid "Frames sent to the model when describing."
+msgstr ""
+
+#: src/memy/gui.py:422 src/memy/gui.py:1003
+msgid "Duplicate group"
+msgstr ""
+
+#: src/memy/gui.py:430
+msgid "Back to result"
+msgstr ""
+
+#: src/memy/gui.py:435 src/memy/gui.py:2372
+msgid "Copy image"
+msgstr ""
+
+#: src/memy/gui.py:440
+msgid "Copy path"
+msgstr ""
+
+#: src/memy/gui.py:443
+msgid "Open"
+msgstr ""
+
+#: src/memy/gui.py:452
+msgid "Compare descriptions"
+msgstr ""
+
+#: src/memy/gui.py:462 src/memy/gui.py:996
+msgid "Back"
+msgstr ""
+
+#: src/memy/gui.py:467
+msgid "Previous meme"
+msgstr ""
+
+#: src/memy/gui.py:472
+msgid "Next meme"
+msgstr ""
+
+#: src/memy/gui.py:484
+msgid "Click the image to enlarge it."
+msgstr ""
+
+#: src/memy/gui.py:489
+msgid "Copy comparison"
+msgstr ""
+
+#: src/memy/gui.py:495
+msgid "Copy all pairs"
+msgstr ""
+
+#: src/memy/gui.py:503
+msgid "Copies memes from the current list that have both selected variants."
+msgstr ""
+
+#: src/memy/gui.py:547
+msgid "No description matches the selected parameters."
+msgstr ""
+
+#: src/memy/gui.py:553 src/memy/gui.py:1492
+msgid "Describe and embed this meme"
+msgstr ""
+
+#: src/memy/gui.py:562
+msgid ""
+"Uses the exact variant from the list and the\n"
+"backend from the config. This meme's search\n"
+"index will be updated from this description."
+msgstr ""
+
+#: src/memy/gui.py:578
+msgid "— F1: shortcuts"
+msgstr ""
+
+#: src/memy/gui.py:582
+msgid "Keyboard shortcuts"
+msgstr ""
+
+#: src/memy/gui.py:590
+msgid "Meme preview"
+msgstr ""
+
+#: src/memy/gui.py:598 src/memy/gui.py:630
+msgid "Close"
+msgstr ""
+
+#: src/memy/gui.py:603
+msgid "Confirm deletion"
+msgstr ""
+
+#: src/memy/gui.py:610
+msgid "The files will be permanently deleted from disk."
+msgstr ""
+
+#: src/memy/gui.py:615
+msgid "Delete"
+msgstr ""
+
+#: src/memy/gui.py:617
+msgid "Cancel"
+msgstr ""
+
+#: src/memy/gui.py:620
+msgid "Deletion result"
+msgstr ""
+
+#: src/memy/gui.py:734
+#, python-brace-format
+msgid "error: {error}"
+msgstr ""
+
+#: src/memy/gui.py:753
+#, python-brace-format
+msgid "{n} result (of {top_n})"
+msgid_plural "{n} results (of {top_n})"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/memy/gui.py:757
+#, python-brace-format
+msgid "; {n} outdated hidden"
+msgid_plural "; {n} outdated hidden"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/memy/gui.py:762
+msgid "no results"
+msgstr ""
+
+#: src/memy/gui.py:778
+#, python-brace-format
+msgid "result limit: {n}"
+msgstr ""
+
+#: src/memy/gui.py:889
+msgid "nothing to copy"
+msgstr ""
+
+#: src/memy/gui.py:897 src/memy/gui.py:933
+msgid "Deletion will be available after embedding."
+msgstr ""
+
+#: src/memy/gui.py:904
+msgid "No files selected for deletion."
+msgstr ""
+
+#: src/memy/gui.py:908
+#, python-brace-format
+msgid "Keep: {path}"
+msgstr ""
+
+#: src/memy/gui.py:924
+msgid "Delete file"
+msgstr ""
+
+#: src/memy/gui.py:927
+msgid "Delete the rest of the group"
+msgstr ""
+
+#: src/memy/gui.py:968
+#, python-brace-format
+msgid "Deleted {n} file; errors: {errors}."
+msgid_plural "Deleted {n} files; errors: {errors}."
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/memy/gui.py:1008
+#, python-brace-format
+msgid "{n} file; click a path to preview the image."
+msgid_plural "{n} files; click a path to preview the image."
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/memy/gui.py:1016
+msgid "No other identical copies."
+msgstr ""
+
+#: src/memy/gui.py:1018
+msgid "No other duplicates."
+msgstr ""
+
+#: src/memy/gui.py:1024
+#, python-brace-format
+msgid "Hid {n} outdated path."
+msgid_plural "Hid {n} outdated paths."
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/memy/gui.py:1033
+msgid "representative"
+msgstr ""
+
+#: src/memy/gui.py:1035
+msgid "primary copy"
+msgstr ""
+
+#: src/memy/gui.py:1080
+#, python-brace-format
+msgid "copied path: {path}"
+msgstr ""
+
+#: src/memy/gui.py:1136
+msgid "filter names and paths…"
+msgstr ""
+
+#: src/memy/gui.py:1186
+msgid "Loading the embedding queue…"
+msgstr ""
+
+#: src/memy/gui.py:1223
+#, python-brace-format
+msgid "Embeddings: {processed}/{total}; done: {done}, errors: {failed}"
+msgstr ""
+
+#: src/memy/gui.py:1245
+#, python-brace-format
+msgid "Embedding error: {error}"
+msgstr ""
+
+#: src/memy/gui.py:1248
+#, python-brace-format
+msgid "Embedding finished: {done}/{total}; errors: {failed}."
+msgstr ""
+
+#: src/memy/gui.py:1251
+msgid "All described memes already have embeddings."
+msgstr ""
+
+#: src/memy/gui.py:1259
+#, python-brace-format
+msgid "Selected {n} file"
+msgid_plural "Selected {n} files"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/memy/gui.py:1285
+#, python-brace-format
+msgid "{name} — {n} file"
+msgid_plural "{name} — {n} files"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/memy/gui.py:1294
+msgid "No files match the filters."
+msgstr ""
+
+#: src/memy/gui.py:1301
+#, python-brace-format
+msgid "{n} file; selected: {selected}; outdated hidden: {hidden}"
+msgid_plural "{n} files; selected: {selected}; outdated hidden: {hidden}"
+msgstr[0] ""
+msgstr[1] ""
+
+#: src/memy/gui.py:1317
+msgid "Name"
+msgstr ""
+
+#: src/memy/gui.py:1318
+msgid "Folder"
+msgstr ""
+
+#: src/memy/gui.py:1319
+msgid "Copies"
+msgstr ""
+
+#: src/memy/gui.py:1320
+msgid "Indexing state"
+msgstr ""
+
+#: src/memy/gui.py:1324
+msgctxt "file state"
+msgid "Undescribed"
+msgstr ""
+
+#: src/memy/gui.py:1325
+msgctxt "file state"
+msgid "Described"
+msgstr ""
+
+#: src/memy/gui.py:1326
+msgctxt "file state"
+msgid "Description error"
+msgstr ""
+
+#: src/memy/gui.py:1348
+msgctxt "file state"
+msgid "indexed"
+msgstr ""
+
+#: src/memy/gui.py:1371
+#, python-brace-format
+msgid "cannot open: {error}"
+msgstr ""
+
+#: src/memy/gui.py:1463
+#, python-brace-format
+msgid "Descriptions: running {running}; queued: {queued}"
+msgstr ""
+
+#: src/memy/gui.py:1480
+#, python-brace-format
+msgid "Queued: position {n}."
+msgstr ""
+
+#: src/memy/gui.py:1486 src/memy/gui.py:1532
+msgid "Describing…"
+msgstr ""
+
+#: src/memy/gui.py:1488
+msgid "Queued"
+msgstr ""
+
+#: src/memy/gui.py:1490
+msgid "Add to queue"
+msgstr ""
+
+#: src/memy/gui.py:1557
+msgid "The file is no longer indexed under this hash."
+msgstr ""
+
+#: src/memy/gui.py:1585
+#, python-brace-format
+msgid "Unknown backend: {backend}"
+msgstr ""
+
+#: src/memy/gui.py:1599
+msgid "The file content has changed; run a scan."
+msgstr ""
+
+#: src/memy/gui.py:1619
+msgid "No description was saved."
+msgstr ""
+
+#: src/memy/gui.py:1639
+msgid "Description ready. Embedding…"
+msgstr ""
+
+#: src/memy/gui.py:1645
+msgid "Description saved. Creating the embedding failed."
+msgstr ""
+
+#: src/memy/gui.py:1647
+#, python-brace-format
+msgid "Describing failed: {error}"
+msgstr ""
+
+#: src/memy/gui.py:1657
+msgid "description and embedding ready."
+msgstr ""
+
+#: src/memy/gui.py:1745
+#, python-brace-format
+msgid "Description: {variant}"
+msgstr ""
+
+#: src/memy/gui.py:1747
+#, python-brace-format
+msgid "Variants for this meme: {available} / {total}"
+msgstr ""
+
+#: src/memy/gui.py:1753 src/memy/gui.py:1936
+msgid "This meme has no description in the selected variant."
+msgstr ""
+
+#: src/memy/gui.py:1755
+msgid "No descriptions match the selected parameters."
+msgstr ""
+
+#: src/memy/gui.py:1956
+msgid "Select two available descriptions to copy."
+msgstr ""
+
+#: src/memy/gui.py:1965
+msgid "Copied the description comparison as JSON."
+msgstr ""
+
+#: src/memy/gui.py:2013
+msgid "Select description variants and a non-empty meme list."
+msgstr ""
+
+#: src/memy/gui.py:2052
+msgid "No memes with both selected variants to copy."
+msgstr ""
+
+#: src/memy/gui.py:2060
+#, python-brace-format
+msgid "Copied comparisons as JSON. Pairs: {pairs}; skipped memes: {skipped}."
+msgstr ""
+
+#: src/memy/gui.py:2079
+msgid "No memes match both sides."
+msgstr ""
+
+#: src/memy/gui.py:2081
+msgid "Cannot display the selected meme."
+msgstr ""
+
+#: src/memy/gui.py:2123
+msgid "Description"
+msgstr ""
+
+#: src/memy/gui.py:2125
+msgid "(missing field)"
+msgstr ""
+
+#: src/memy/gui.py:2269
+#, python-brace-format
+msgid "cannot extract frames: {error}"
+msgstr ""
+
+#: src/memy/gui.py:2276
+#, python-brace-format
+msgid "cannot load frame: {frame}"
+msgstr ""
+
+#: src/memy/gui.py:2281
+#, python-brace-format
+msgid "frame {n}/{total} · {seconds:.3f} s"
+msgstr ""
+
+#: src/memy/gui.py:2321
+#, python-brace-format
+msgid "cannot load: {path}: {error}"
+msgstr ""
+
+#: src/memy/gui.py:2327
+#, python-brace-format
+msgid "the file is gone or its content changed: {path}"
+msgstr ""
+
+#: src/memy/gui.py:2340
+#, python-brace-format
+msgid "cannot load: {path} — showing a placeholder"
+msgstr ""
+
+#: src/memy/gui.py:2362
+msgid "No image preview"
+msgstr ""
+
+#: src/memy/gui.py:2364
+msgid "video"
+msgstr ""
+
+#: src/memy/gui.py:2368
+msgid "first frame"
+msgstr ""
+
+#: src/memy/gui.py:2372
+msgid "Copy video"
+msgstr ""

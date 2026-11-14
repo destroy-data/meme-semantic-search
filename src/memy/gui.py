@@ -21,7 +21,7 @@ from threading import Thread
 import dearpygui.dearpygui as dpg
 from PIL import Image, ImageOps
 
-from memy import common
+from memy import common, i18n
 from memy import describe as describe_stage
 from memy import embed as embed_stage
 from memy import search as search_stage
@@ -33,6 +33,7 @@ from memy.collection import (
     indexed_files_sql,
     related_files,
 )
+from memy.i18n import N_, _, ngettext, pgettext
 
 
 def variant_label(model: str, prompt_version: str, effort_level: str | None) -> str:
@@ -64,12 +65,20 @@ ROW_H_FALLBACK = 21  # used until a rendered row can be measured
 FOOTER_SPACE = 36  # keep the status line outside the scrolling content panes
 SPLITTER_WIDTH = 8
 MIN_PANE_WIDTH = 200
-COMPARE_ANY = "Dowolny"
-COMPARE_DEFAULT_EFFORT = "Brak ustawienia"
+# Labels below are translated where they are shown: the module is imported
+# before the configured language is set.
 COMPARE_PARAMETERS = (
-    ("model", "Model"),
-    ("prompt_version", "Prompt"),
-    ("effort_level", "Poziom rozumowania"),
+    ("model", N_("Model")),
+    ("prompt_version", N_("Prompt")),
+    ("effort_level", N_("Reasoning effort")),
+)
+MODES = (("search", N_("Search")), ("list", N_("List")), ("compare", N_("Compare")))
+COLLECTION_FILTERS = (
+    ("all", N_("All")),
+    ("duplicates", N_("Duplicates")),
+    ("identical", N_("Identical copies")),
+    ("undescribed", N_("Undescribed")),
+    ("failed", N_("Errors")),
 )
 
 # Modifier keys are queried as regular keys; the Mod* aliases are what ImGui
@@ -79,23 +88,24 @@ SHIFT_KEYS = (dpg.mvKey_ModShift, dpg.mvKey_LShift, dpg.mvKey_RShift)
 ALT_KEYS = (dpg.mvKey_ModAlt, dpg.mvKey_LAlt, dpg.mvKey_RAlt)
 
 
-SHORTCUTS = [
-    ("Enter", "szukaj teraz (i tak szuka samo po chwili)"),
-    ("↑ / ↓", "poprzedni / następny mem"),
-    ("PgUp / PgDn", f"skok o {PAGE_STEP} wyników"),
-    ("Ctrl+Home / Ctrl+End", "pierwszy / ostatni wynik"),
-    ("Alt+1…9", "skok do wyniku N"),
-    ("Ctrl+C", "kopiuj OBRAZEK / FILM do schowka (wklej na czacie)"),
-    ("Ctrl+Shift+C", "kopiuj ścieżkę do pliku"),
-    ("Ctrl+O / Shift+Enter", "otwórz w przeglądarce obrazków"),
-    ("Tab / Shift+Tab", "następny / poprzedni wariant opisu"),
-    ("Ctrl+D", "pokaż / ukryj opis"),
-    ("F11", "podgląd na całą szerokość"),
-    ("Ctrl+= / Ctrl+-", f"więcej / mniej wyników (co {TOP_N_STEP})"),
-    ("Esc", "wróć / wyczyść zapytanie / wyjdź"),
-    ("Ctrl+Q", "wyjście"),
-    ("F1", "ta ściąga"),
-]
+def shortcuts() -> list[tuple[str, str]]:
+    return [
+        ("Enter", _("search now (it also searches by itself after a moment)")),
+        ("↑ / ↓", _("previous / next meme")),
+        ("PgUp / PgDn", _("jump by {n} results").format(n=PAGE_STEP)),
+        ("Ctrl+Home / Ctrl+End", _("first / last result")),
+        ("Alt+1…9", _("jump to result N")),
+        ("Ctrl+C", _("copy IMAGE / VIDEO to the clipboard (paste in a chat)")),
+        ("Ctrl+Shift+C", _("copy the file path")),
+        ("Ctrl+O / Shift+Enter", _("open in an image viewer")),
+        ("Tab / Shift+Tab", _("next / previous description variant")),
+        ("Ctrl+D", _("show / hide the description")),
+        ("F11", _("full-width preview")),
+        ("Ctrl+= / Ctrl+-", _("more / fewer results (by {n})").format(n=TOP_N_STEP)),
+        ("Esc", _("back / clear the query / quit")),
+        ("Ctrl+Q", _("quit")),
+        ("F1", _("this cheat sheet")),
+    ]
 
 
 def key_down(keys: tuple[int, ...]) -> bool:
@@ -104,7 +114,7 @@ def key_down(keys: tuple[int, ...]) -> bool:
 
 def description_fields(raw: str | None) -> list[tuple[str | None, str]]:
     if not raw:
-        return [(None, "(brak opisu)")]
+        return [(None, _("(no description)"))]
     try:
         d = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
@@ -118,7 +128,7 @@ def description_fields(raw: str | None) -> list[tuple[str | None, str]]:
         if isinstance(value, list):
             value = ", ".join(str(v) for v in value)
         fields.append((str(key), str(value)))
-    return fields or [(None, "(pusty opis)")]
+    return fields or [(None, _("(empty description)"))]
 
 
 def copy_image_to_clipboard(path: str) -> str:
@@ -136,7 +146,7 @@ def copy_image_to_clipboard(path: str) -> str:
     elif shutil.which("xclip"):
         cmd = ["xclip", "-selection", "clipboard", "-t", mime]
     else:
-        return "brak wl-copy / xclip — nie mam czym kopiować"
+        return _("no wl-copy / xclip — nothing to copy with")
     try:
         if as_file:
             data = (Path(path).resolve().as_uri() + "\r\n").encode()
@@ -155,9 +165,13 @@ def copy_image_to_clipboard(path: str) -> str:
         # Both tools daemonize themselves once they own the selection.
         subprocess.run(cmd, input=data, check=True, timeout=5)
     except (OSError, subprocess.SubprocessError) as e:
-        return f"kopiowanie nie wyszło: {e}"
-    kind = "film" if common.is_video(path) else "obrazek"
-    return f"skopiowano {kind}: {os.path.basename(path)}"
+        return _("copying failed: {error}").format(error=e)
+    message = (
+        _("copied video: {name}")
+        if common.is_video(path)
+        else _("copied image: {name}")
+    )
+    return message.format(name=os.path.basename(path))
 
 
 def is_animation(path: str) -> bool:
@@ -175,14 +189,14 @@ def open_externally(path: str) -> str:
     viewers = [] if common.is_video(path) else search_stage.VIEWERS
     viewer = next((v for v in [*viewers, "xdg-open"] if shutil.which(v)), None)
     if not viewer:
-        return "nie znalazłem przeglądarki obrazków"
+        return _("no image viewer found")
     subprocess.Popen(
         [viewer, path],
         start_new_session=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    return f"otwieram w {viewer}"
+    return _("opening in {viewer}").format(viewer=viewer)
 
 
 # DPG 2.x autoloads all Unicode ranges from a bound font, so we only need to
@@ -222,16 +236,22 @@ class App:
         self.embedding_weight = 0.5
         self.last_embedding_weight = 0.5
         self.pane_w = 0
-        self.list_widths = {"Szukaj": 380, "Lista": 570}
+        self.list_widths = {"search": 380, "list": 570}
         self.split_drag: tuple[float, float] | None = None
         self.show_desc = True
         self.fullscreen = False
-        self.mode = "Szukaj"
+        # Modes and filters are ids internally; widgets show translated labels.
+        self.mode_labels = {mode: _(label) for mode, label in MODES}
+        self.filter_labels = {kind: _(label) for kind, label in COLLECTION_FILTERS}
+        # Filter combo sentinels sit among real model/prompt/effort values.
+        self.compare_any = _("Any")
+        self.compare_default_effort = _("Not set")
+        self.mode = "search"
         self.mode_state = {}
-        self.checked = {"Szukaj": set(), "Lista": set()}
+        self.checked = {"search": set(), "list": set()}
         self.collection = None
         self.collection_hidden = 0
-        self.collection_filter = "Wszystkie"
+        self.collection_filter = "all"
         self.list_selected = None
         self.related_origin = None
         self.related_scroll = 0
@@ -250,8 +270,8 @@ class App:
         self.compare_origin: tuple[str | None, str, float, str] | None = None
         self.compare_size = (0, 0)
         self.compare_filters = [
-            dict.fromkeys((key for key, _ in COMPARE_PARAMETERS), COMPARE_ANY)
-            for _ in range(2)
+            dict.fromkeys((key for key, _label in COMPARE_PARAMETERS), self.compare_any)
+            for _side in range(2)
         ]
         self.compare_catalog: dict[str, tuple[str, str, str | None]] = {}
         self.compare_last_path: str | None = None
@@ -286,9 +306,9 @@ class App:
             no_scroll_with_mouse=True,
         ):
             dpg.add_radio_button(
-                ("Szukaj", "Lista", "Porównanie"),
+                list(self.mode_labels.values()),
                 tag="view_mode",
-                default_value=self.mode,
+                default_value=self.mode_labels[self.mode],
                 horizontal=True,
                 callback=self.on_mode_change,
             )
@@ -302,7 +322,7 @@ class App:
                 with dpg.table_row():
                     dpg.add_input_text(
                         tag="query",
-                        hint="opisz mem…",
+                        hint=_("describe a meme…"),
                         width=-1,
                         callback=self.on_query_change,
                     )
@@ -319,54 +339,52 @@ class App:
                         )
                     with dpg.tooltip("embedding_weight"):
                         dpg.add_text(
-                            "W lewo: dopasowanie tekstu (FTS).\n"
-                            "W prawo: podobieństwo znaczenia (embeddingi).\n"
-                            "50%: oba równie ważne."
+                            _(
+                                "Left: text matching (FTS).\n"
+                                "Right: similarity of meaning (embeddings).\n"
+                                "Middle: both weigh the same."
+                            )
                         )
             with dpg.group(tag="search_content", horizontal=True, horizontal_spacing=0):
                 # Anchor SameLine inside the group when F11 hides the left panes.
                 dpg.add_spacer(width=0, height=0)
                 with dpg.child_window(
                     tag="list_pane",
-                    width=self.list_widths["Szukaj"],
+                    width=self.list_widths["search"],
                     height=-FOOTER_SPACE,
                     border=False,
                 ):
                     pass
                 with dpg.child_window(
                     tag="list_content",
-                    width=self.list_widths["Lista"],
+                    width=self.list_widths["list"],
                     height=-FOOTER_SPACE,
                     border=False,
                     show=False,
                 ):
                     dpg.add_combo(
-                        [
-                            "Wszystkie",
-                            "Duplikaty",
-                            "Identyczne kopie",
-                            "Nieopisane",
-                            "Błędy",
-                        ],
-                        default_value="Wszystkie",
+                        list(self.filter_labels.values()),
+                        default_value=self.filter_labels[self.collection_filter],
                         width=-1,
                         callback=self.on_filter_change,
                     )
                     dpg.add_button(
-                        label="Embeduj opisane",
+                        label=_("Embed described"),
                         tag="embed_described",
                         callback=self.start_embedding,
                     )
                     with dpg.tooltip("embed_described"):
                         dpg.add_text(
-                            "Uzupełnia brakujące embeddingi w całej kolekcji,\n"
-                            "niezależnie od promptu, modelu, filtrów i zaznaczenia.\n"
-                            "Dla każdego reprezentanta wybiera najnowszy udany opis."
+                            _(
+                                "Fills in missing embeddings across the whole collection,\n"
+                                "regardless of prompt, model, filters and selection.\n"
+                                "Picks the newest successful description of each representative."
+                            )
                         )
                     dpg.add_text("", tag="embed_progress", wrap=530)
                     dpg.add_group(tag="collection_rows")
                     dpg.add_button(
-                        label="Usuń zaznaczone pliki",
+                        label=_("Delete selected files"),
                         callback=lambda: self.request_delete(self.checked[self.mode]),
                     )
                 with dpg.child_window(
@@ -383,7 +401,7 @@ class App:
                     height=-FOOTER_SPACE,
                 )
                 with dpg.tooltip("pane_splitter"):
-                    dpg.add_text("Przeciągnij, aby zmienić szerokość paneli.")
+                    dpg.add_text(_("Drag to resize the panels."))
                 with dpg.child_window(
                     tag="preview_pane",
                     autosize_x=True,
@@ -400,31 +418,31 @@ class App:
                         )
                         dpg.add_text("", tag="frame_label")
                         with dpg.tooltip("frame_nav"):
-                            dpg.add_text("Klatki wysyłane do modelu przy opisywaniu.")
+                            dpg.add_text(_("Frames sent to the model when describing."))
                     with dpg.group(tag="preview_actions", horizontal=True, show=False):
                         dpg.add_button(
-                            label="Grupa duplikatów",
+                            label=_("Duplicate group"),
                             callback=lambda: self.open_related(identical=False),
                         )
                         dpg.add_button(
-                            label="Identyczne kopie",
+                            label=_("Identical copies"),
                             callback=lambda: self.open_related(identical=True),
                         )
                         dpg.add_button(
-                            label="Wróć do wyniku",
+                            label=_("Back to result"),
                             callback=self.close_related,
                         )
                     with dpg.group(tag="file_actions", horizontal=True, show=False):
                         dpg.add_button(
-                            label="Kopiuj obraz",
+                            label=_("Copy image"),
                             tag="copy_file",
                             callback=lambda: self.queue_copy("image"),
                         )
                         dpg.add_button(
-                            label="Kopiuj ścieżkę",
+                            label=_("Copy path"),
                             callback=lambda: self.queue_copy("path"),
                         )
-                        dpg.add_button(label="Otwórz", callback=self.open_current)
+                        dpg.add_button(label=_("Open"), callback=self.open_current)
                     dpg.add_combo(
                         tag="desc_variant",
                         items=[],
@@ -433,7 +451,7 @@ class App:
                         width=-1,
                     )
                     dpg.add_button(
-                        label="Porównaj opisy",
+                        label=_("Compare descriptions"),
                         tag="compare_open",
                         callback=self.open_comparison,
                         show=False,
@@ -443,15 +461,17 @@ class App:
             with dpg.group(tag="compare_view", show=False):
                 with dpg.group(horizontal=True):
                     dpg.add_button(
-                        label="Wróć", tag="compare_back", callback=self.close_comparison
+                        label=_("Back"),
+                        tag="compare_back",
+                        callback=self.close_comparison,
                     )
                     dpg.add_button(
-                        label="Poprzedni mem",
+                        label=_("Previous meme"),
                         tag="compare_previous",
                         callback=lambda: self.step_comparison(-1),
                     )
                     dpg.add_button(
-                        label="Następny mem",
+                        label=_("Next meme"),
                         tag="compare_next",
                         callback=lambda: self.step_comparison(1),
                     )
@@ -463,25 +483,27 @@ class App:
                 ):
                     dpg.add_text("", tag="compare_path", wrap=700)
                     dpg.add_text(
-                        "Kliknij obraz, aby powiększyć.",
+                        _("Click the image to enlarge it."),
                         tag="compare_image_hint",
                         color=HINT_COLOR,
                     )
                     dpg.add_button(
-                        label="Kopiuj porównanie",
+                        label=_("Copy comparison"),
                         tag="compare_copy",
                         callback=self.copy_comparison,
                         enabled=False,
                     )
                     dpg.add_button(
-                        label="Kopiuj wszystkie pary",
+                        label=_("Copy all pairs"),
                         tag="compare_copy_all",
                         callback=self.copy_all_comparisons,
                         enabled=False,
                     )
                     with dpg.tooltip("compare_copy_all"):
                         dpg.add_text(
-                            "Kopiuje memy z bieżącej listy mające oba wybrane warianty."
+                            _(
+                                "Copies memes from the current list that have both selected variants."
+                            )
                         )
                 with dpg.table(
                     header_row=False,
@@ -504,13 +526,13 @@ class App:
                                         for key, label in COMPARE_PARAMETERS:
                                             with dpg.group():
                                                 dpg.add_text(
-                                                    label,
+                                                    _(label),
                                                     tag=f"compare_filter_label_{side}_{key}",
                                                 )
                                                 dpg.add_combo(
                                                     tag=f"compare_filter_{side}_{key}",
-                                                    items=[COMPARE_ANY],
-                                                    default_value=COMPARE_ANY,
+                                                    items=[self.compare_any],
+                                                    default_value=self.compare_any,
                                                     width=-1,
                                                     callback=self.on_compare_filter,
                                                     user_data=(side, key),
@@ -524,13 +546,15 @@ class App:
                                     user_data=side,
                                 )
                                 dpg.add_text(
-                                    "Brak opisu pasującego do wybranych parametrów.",
+                                    _(
+                                        "No description matches the selected parameters."
+                                    ),
                                     tag=f"compare_missing_{side}",
                                     show=False,
                                     color=HINT_COLOR,
                                 )
                                 dpg.add_button(
-                                    label="Opisz i embeduj ten mem",
+                                    label=_("Describe and embed this meme"),
                                     tag=f"compare_generate_{side}",
                                     callback=self.start_comparison_generation,
                                     user_data=side,
@@ -538,9 +562,11 @@ class App:
                                 )
                                 with dpg.tooltip(f"compare_generate_{side}"):
                                     dpg.add_text(
-                                        "Używa dokładnego wariantu z listy i backendu\n"
-                                        "z konfiguracji. Indeks wyszukiwania tego mema\n"
-                                        "zostanie zaktualizowany na podstawie tego opisu."
+                                        _(
+                                            "Uses the exact variant from the list and the\n"
+                                            "backend from the config. This meme's search\n"
+                                            "index will be updated from this description."
+                                        )
                                     )
                 with dpg.child_window(
                     tag="compare_fields", height=-FOOTER_SPACE, border=False
@@ -552,10 +578,12 @@ class App:
                 dpg.add_table_column(width_fixed=True, init_width_or_weight=110)
                 with dpg.table_row():
                     dpg.add_text("", tag="status")
-                    dpg.add_text("— F1: skróty", tag="status_hint", color=HINT_COLOR)
+                    dpg.add_text(
+                        _("— F1: shortcuts"), tag="status_hint", color=HINT_COLOR
+                    )
 
         dpg.add_window(
-            label="Skróty klawiszowe",
+            label=_("Keyboard shortcuts"),
             tag="help",
             show=False,
             width=560,
@@ -563,7 +591,7 @@ class App:
             pos=(340, 120),
         )
         with dpg.window(
-            label="Podgląd mema",
+            label=_("Meme preview"),
             tag="compare_zoom",
             modal=True,
             show=False,
@@ -571,29 +599,29 @@ class App:
             height=420,
         ):
             dpg.add_button(
-                label="Zamknij",
+                label=_("Close"),
                 tag="compare_zoom_close",
                 callback=self.close_comparison_zoom,
             )
         with dpg.window(
-            label="Potwierdź usunięcie",
+            label=_("Confirm deletion"),
             tag="delete_confirm",
             modal=True,
             show=False,
             width=700,
             height=420,
         ):
-            dpg.add_text("Pliki zostaną trwale usunięte z dysku.")
+            dpg.add_text(_("The files will be permanently deleted from disk."))
             dpg.add_text("", tag="delete_keep", wrap=660)
             with dpg.child_window(height=250):
                 dpg.add_text("", tag="delete_paths", wrap=660)
             with dpg.group(horizontal=True):
-                dpg.add_button(label="Usuń", callback=self.confirm_delete)
+                dpg.add_button(label=_("Delete"), callback=self.confirm_delete)
                 dpg.add_button(
-                    label="Anuluj", callback=lambda: dpg.hide_item("delete_confirm")
+                    label=_("Cancel"), callback=lambda: dpg.hide_item("delete_confirm")
                 )
         with dpg.window(
-            label="Wynik usuwania",
+            label=_("Deletion result"),
             tag="delete_report",
             modal=True,
             show=False,
@@ -603,12 +631,12 @@ class App:
             with dpg.child_window(height=320):
                 dpg.add_text("", tag="delete_errors", wrap=660)
             dpg.add_button(
-                label="Zamknij", callback=lambda: dpg.hide_item("delete_report")
+                label=_("Close"), callback=lambda: dpg.hide_item("delete_report")
             )
         with dpg.table(parent="help", header_row=False, borders_innerH=False):
             dpg.add_table_column(width_fixed=True, init_width_or_weight=180)
             dpg.add_table_column()
-            for keys, what in SHORTCUTS:
+            for keys, what in shortcuts():
                 with dpg.table_row():
                     dpg.add_text(keys, color=KEY_COLOR)
                     dpg.add_text(what)
@@ -662,13 +690,13 @@ class App:
 
     # --------------------------------------------------------------- search
 
-    def on_query_change(self, *_: object) -> None:
+    def on_query_change(self, *_args: object) -> None:
         # Search-as-you-type: arm the debounce, the run loop fires it.
         self.search_at = time.monotonic() + DEBOUNCE_S
 
     def on_balance_change(self, _sender: object, value: int) -> None:
         self.embedding_weight = value / 100
-        if self.mode == "Szukaj":
+        if self.mode == "search":
             self.on_query_change()
 
     def maybe_search(self) -> None:
@@ -682,7 +710,7 @@ class App:
     def do_search(self) -> None:
         if self.related_origin is not None:
             self.close_related()
-        if self.mode == "Lista":
+        if self.mode == "list":
             self.render_collection()
             return
         query = dpg.get_value("query").strip()
@@ -707,7 +735,7 @@ class App:
         # Endpoint down or timing out (OSError), a malformed or wrong-sized
         # embedding response (ValueError, KeyError), or a DB hiccup.
         except (OSError, ValueError, KeyError, sqlite3.Error) as e:
-            dpg.set_value("status", f"błąd: {e}")
+            dpg.set_value("status", _("error: {error}").format(error=e))
             return
 
         self.last_query = query
@@ -725,15 +753,21 @@ class App:
         if paths:
             self.current_idx = -1
             self.select_index(0)
-            suffix = f", ukryto {hidden} nieaktualnych" if hidden else ""
-            dpg.set_value("status", f"{len(paths)} wyników (z {self.top_n}{suffix})")
+            status = ngettext(
+                "{n} result (of {top_n})", "{n} results (of {top_n})", len(paths)
+            ).format(n=len(paths), top_n=self.top_n)
+            if hidden:
+                status += ngettext(
+                    "; {n} outdated hidden", "; {n} outdated hidden", hidden
+                ).format(n=hidden)
+            dpg.set_value("status", status)
         else:
             self.current_idx = -1
-            dpg.set_value("status", "brak wyników")
+            dpg.set_value("status", _("no results"))
             self.clear_preview()
 
     def bump_top_n(self, delta: int) -> None:
-        if self.mode != "Szukaj":
+        if self.mode != "search":
             return
         if not key_down(CTRL_KEYS):
             return
@@ -745,7 +779,7 @@ class App:
         if self.last_query:
             self.do_search()
         else:
-            dpg.set_value("status", f"limit wyników: {self.top_n}")
+            dpg.set_value("status", _("result limit: {n}").format(n=self.top_n))
 
     # ----------------------------------------------------------- navigation
 
@@ -757,7 +791,7 @@ class App:
         if self.comparing:
             self.select_comparison(idx)
             return
-        if self.mode != "Szukaj" or self.related_origin is not None:
+        if self.mode != "search" or self.related_origin is not None:
             return
         if not (0 <= idx < len(self.paths)):
             return
@@ -796,7 +830,7 @@ class App:
                     *(
                         f"compare_filter_{side}_{key}"
                         for side in range(2)
-                        for key, _ in COMPARE_PARAMETERS
+                        for key, _label in COMPARE_PARAMETERS
                     ),
                 )
             ):
@@ -806,11 +840,11 @@ class App:
             return
         self.select_index(min(len(self.paths) - 1, max(0, self.current_idx + delta)))
 
-    def on_home(self, *_: object) -> None:
+    def on_home(self, *_args: object) -> None:
         if key_down(CTRL_KEYS):
             self.select_index(0)
 
-    def on_end(self, *_: object) -> None:
+    def on_end(self, *_args: object) -> None:
         if key_down(CTRL_KEYS):
             paths = self.compare_paths if self.comparing else self.paths
             self.select_index(len(paths) - 1)
@@ -819,7 +853,7 @@ class App:
         if key_down(ALT_KEYS):
             self.select_index(digit - 1)
 
-    def on_return(self, *_: object) -> None:
+    def on_return(self, *_args: object) -> None:
         if key_down(SHIFT_KEYS):
             self.on_open()
             return
@@ -828,7 +862,7 @@ class App:
         self.search_at = None
         self.do_search()
 
-    def on_escape(self, *_: object) -> None:
+    def on_escape(self, *_args: object) -> None:
         if dpg.is_item_shown("delete_confirm"):
             dpg.hide_item("delete_confirm")
         elif dpg.is_item_shown("delete_report"):
@@ -847,7 +881,7 @@ class App:
         else:
             dpg.stop_dearpygui()
 
-    def on_quit(self, *_: object) -> None:
+    def on_quit(self, *_args: object) -> None:
         if key_down(CTRL_KEYS):
             dpg.stop_dearpygui()
 
@@ -856,7 +890,7 @@ class App:
     def current_path(self) -> str | None:
         if self.preview_path:
             return self.preview_path
-        dpg.set_value("status", "nie ma czego skopiować")
+        dpg.set_value("status", _("nothing to copy"))
         return None
 
     def relative_path(self, path: str) -> str:
@@ -864,42 +898,43 @@ class App:
 
     def request_delete(self, paths, *, keep=None):
         if self.embedding_running or self.compare_job is not None or self.compare_queue:
-            dpg.set_value("status", "Usuwanie będzie dostępne po embedowaniu.")
+            dpg.set_value("status", _("Deletion will be available after embedding."))
             return
         paths = set(paths)
         rows = self.con.execute(indexed_files_sql(self.con)).fetchall()
         self.pending_delete = [(h, p) for h, p in rows if p in paths and p != keep]
         self.pending_delete = sorted(set(self.pending_delete), key=lambda row: row[1])
         if not self.pending_delete:
-            dpg.set_value("status", "Nie zaznaczono plików do usunięcia.")
+            dpg.set_value("status", _("No files selected for deletion."))
             return
         dpg.set_value(
-            "delete_keep", f"Zachowaj: {self.relative_path(keep)}" if keep else ""
+            "delete_keep",
+            _("Keep: {path}").format(path=self.relative_path(keep)) if keep else "",
         )
         dpg.set_value(
             "delete_paths",
-            "\n".join(self.relative_path(p) for _, p in self.pending_delete),
+            "\n".join(self.relative_path(p) for _digest, p in self.pending_delete),
         )
         dpg.show_item("delete_confirm")
 
     def delete_rest(self, digest, keep):
         rows = related_files(self.con, digest, identical=False)
-        paths, _ = current_result_paths([(h, p) for h, p, _, _ in rows])
+        paths, _hidden = current_result_paths([(row[0], row[1]) for row in rows])
         self.request_delete(paths, keep=keep)
 
     def file_menu(self, widget, digest, path):
         with dpg.popup(widget, mousebutton=dpg.mvMouseButton_Right):
             dpg.add_menu_item(
-                label="Usuń plik", callback=lambda: self.request_delete([path])
+                label=_("Delete file"), callback=lambda: self.request_delete([path])
             )
             dpg.add_menu_item(
-                label="Usuń resztę z grupy",
+                label=_("Delete the rest of the group"),
                 callback=lambda: self.delete_rest(digest, path),
             )
 
-    def confirm_delete(self, *_):
+    def confirm_delete(self, *_args):
         if self.embedding_running or self.compare_job is not None or self.compare_queue:
-            dpg.set_value("status", "Usuwanie będzie dostępne po embedowaniu.")
+            dpg.set_value("status", _("Deletion will be available after embedding."))
             return
         dpg.hide_item("delete_confirm")
         preview, origin = self.preview_path, self.related_origin
@@ -922,7 +957,7 @@ class App:
             self.mode_state[mode] = tuple(state)
         self.related_origin = None
         self.clear_preview()
-        if self.mode == "Szukaj":
+        if self.mode == "search":
             self.do_search()
         else:
             self.last_query = ""
@@ -933,7 +968,11 @@ class App:
                 self.open_related(identical=self.related_identical)
                 self.related_origin = origin
         self.apply_layout()
-        message = f"Usunięto {len(removed)} plików; błędy: {len(errors)}."
+        message = ngettext(
+            "Deleted {n} file; errors: {errors}.",
+            "Deleted {n} files; errors: {errors}.",
+            len(removed),
+        ).format(n=len(removed), errors=len(errors))
         dpg.set_value("status", message)
         if errors:
             dpg.set_value(
@@ -951,46 +990,55 @@ class App:
             return
         self.related_identical = identical
         rows = related_files(self.con, self.preview_hash, identical=identical)
-        paths, hidden = current_result_paths([(h, p) for h, p, _, _ in rows])
+        paths, hidden = current_result_paths([(row[0], row[1]) for row in rows])
         available = set(paths)
         if self.related_origin is None:
             self.related_origin = self.preview_path
-            pane = "list_pane" if self.mode == "Szukaj" else "list_content"
+            pane = "list_pane" if self.mode == "search" else "list_content"
             self.related_scroll = dpg.get_y_scroll(pane)
         dpg.delete_item("related", children_only=True)
-        dpg.add_button(label="Wróć", parent="related", callback=self.close_related)
-        if self.mode == "Lista":
+        dpg.add_button(label=_("Back"), parent="related", callback=self.close_related)
+        if self.mode == "list":
             dpg.add_button(
-                label="Usuń zaznaczone pliki",
+                label=_("Delete selected files"),
                 parent="related",
                 callback=lambda: self.request_delete(self.checked[self.mode]),
             )
-        title = "Identyczne kopie" if identical else "Grupa duplikatów"
+        title = _("Identical copies") if identical else _("Duplicate group")
         dpg.add_text(title, parent="related")
         dpg.add_text(self.relative_path(self.preview_path), parent="related", wrap=680)
         dpg.add_text(
-            f"{len(paths)} plików; kliknij ścieżkę, aby podejrzeć obraz.",
+            ngettext(
+                "{n} file; click a path to preview the image.",
+                "{n} files; click a path to preview the image.",
+                len(paths),
+            ).format(n=len(paths)),
             parent="related",
         )
         if len(paths) <= 1:
             dpg.add_text(
-                "Brak innych identycznych kopii."
+                _("No other identical copies.")
                 if identical
-                else "Brak innych duplikatów.",
+                else _("No other duplicates."),
                 parent="related",
             )
         if hidden:
-            dpg.add_text(f"Ukryto {hidden} nieaktualnych ścieżek.", parent="related")
+            dpg.add_text(
+                ngettext(
+                    "Hid {n} outdated path.", "Hid {n} outdated paths.", hidden
+                ).format(n=hidden),
+                parent="related",
+            )
         for digest, path, representative, primary in rows:
             if path not in available:
                 continue
             markers = []
             if representative and not identical:
-                markers.append("reprezentant")
+                markers.append(_("representative"))
             if primary:
-                markers.append("kopia główna")
+                markers.append(_("primary copy"))
             suffix = f" ({', '.join(markers)})" if markers else ""
-            if self.mode == "Lista":
+            if self.mode == "list":
                 dpg.add_checkbox(
                     parent="related",
                     default_value=path in self.checked[self.mode],
@@ -1004,7 +1052,7 @@ class App:
                 callback=self.on_related_select,
                 user_data=path,
             )
-            if self.mode == "Lista":
+            if self.mode == "list":
                 self.file_menu(widget, digest, path)
         dpg.show_item("related")
         self.apply_layout()
@@ -1015,7 +1063,7 @@ class App:
         self.show(user_data)
         dpg.focus_item("query")
 
-    def on_copy(self, *_: object) -> None:
+    def on_copy(self, *_args: object) -> None:
         if not key_down(CTRL_KEYS):
             return
         path = self.current_path()
@@ -1033,11 +1081,11 @@ class App:
         self.pending_copy = None
         if kind == "path":
             dpg.set_clipboard_text(path)
-            dpg.set_value("status", f"skopiowano ścieżkę: {path}")
+            dpg.set_value("status", _("copied path: {path}").format(path=path))
         else:
             dpg.set_value("status", copy_image_to_clipboard(path))
 
-    def on_open(self, *_: object) -> None:
+    def on_open(self, *_args: object) -> None:
         # Reachable as Ctrl+O and as Shift+Enter (which routes through here).
         if not (key_down(CTRL_KEYS) or key_down(SHIFT_KEYS)):
             return
@@ -1045,17 +1093,18 @@ class App:
 
     # ---------------------------------------------------------- view toggles
 
-    def on_mode_change(self, _sender: object, app_data: str) -> None:
-        if app_data == "Porównanie":
+    def on_mode_change(self, _sender: object, label: str) -> None:
+        mode = next(m for m, text in self.mode_labels.items() if text == label)
+        if mode == "compare":
             self.open_comparison(from_preview=False)
             return
         if self.comparing:
             self.close_comparison()
-        if app_data == self.mode:
+        if mode == self.mode:
             return
-        if self.mode == "Lista" and self.search_at is not None:
+        if self.mode == "list" and self.search_at is not None:
             self.render_collection()
-        pane = "list_pane" if self.mode == "Szukaj" else "list_content"
+        pane = "list_pane" if self.mode == "search" else "list_content"
         self.mode_state[self.mode] = (
             dpg.get_value("query"),
             self.preview_path,
@@ -1067,9 +1116,9 @@ class App:
             self.related_identical,
             self.related_scroll,
         )
-        self.mode = app_data
-        dpg.configure_item("search_balance_column", show=self.mode == "Szukaj")
-        dpg.configure_item("search_balance", show=self.mode == "Szukaj")
+        self.mode = mode
+        dpg.configure_item("search_balance_column", show=self.mode == "search")
+        dpg.configure_item("search_balance", show=self.mode == "search")
         self.search_at = None
         self.pending_copy = None
         self.related_origin = None
@@ -1086,9 +1135,11 @@ class App:
             width=-1,
             default_value=state[0],
             callback=self.on_query_change,
-            hint="opisz mem…" if self.mode == "Szukaj" else "filtruj nazwy i ścieżki…",
+            hint=_("describe a meme…")
+            if self.mode == "search"
+            else _("filter names and paths…"),
         )
-        if self.mode == "Lista":
+        if self.mode == "list":
             if self.collection is None:
                 self.collection, self.collection_hidden = collection_files(
                     self.con, self.cfg["describe"]
@@ -1104,37 +1155,39 @@ class App:
             self.related_origin = state[5]
             self.related_scroll = state[8]
         self.apply_layout()
-        pane = "list_pane" if self.mode == "Szukaj" else "list_content"
+        pane = "list_pane" if self.mode == "search" else "list_content"
         self.restore_scroll = {
             pane: state[2],
             "preview_pane": state[3],
             "related": state[6],
         }
-        if state[4] or self.mode == "Szukaj":
+        if state[4] or self.mode == "search":
             dpg.set_value("status", state[4])
-        if self.mode == "Szukaj" and (
+        if self.mode == "search" and (
             state[0].strip() != self.last_query
             or self.embedding_weight != self.last_embedding_weight
         ):
             self.on_query_change()
         dpg.focus_item("query")
 
-    def on_filter_change(self, _sender, value):
-        self.collection_filter = value
+    def on_filter_change(self, _sender, label):
+        self.collection_filter = next(
+            kind for kind, text in self.filter_labels.items() if text == label
+        )
         self.render_collection()
 
-    def start_embedding(self, *_):
+    def start_embedding(self, *_args):
         if (
             self.embedding_running
             or self.compare_job is not None
             or self.compare_queue
-            or self.mode != "Lista"
+            or self.mode != "list"
         ):
             return
         self.embedding_running = True
         self.embedding_counts = (0, 0, 0)
         dpg.configure_item("embed_described", enabled=False)
-        dpg.set_value("embed_progress", "Wczytywanie kolejki embeddingów…")
+        dpg.set_value("embed_progress", _("Loading the embedding queue…"))
         dpg.hide_item("delete_confirm")
         self.pending_delete = []
         Thread(target=self.embed_worker, daemon=True).start()
@@ -1171,7 +1224,11 @@ class App:
                 done, failed, total = data
                 dpg.set_value(
                     "embed_progress",
-                    f"Embeddingi: {done + failed}/{total}; gotowe: {done}, błędy: {failed}",
+                    _(
+                        "Embeddings: {processed}/{total}; done: {done}, errors: {failed}"
+                    ).format(
+                        processed=done + failed, total=total, done=done, failed=failed
+                    ),
                 )
                 continue
             self.embedding_running = False
@@ -1181,27 +1238,34 @@ class App:
             self.collection, self.collection_hidden = collection_files(
                 self.con, self.cfg["describe"]
             )
-            if self.mode == "Lista":
+            if self.mode == "list":
                 scroll = dpg.get_y_scroll("list_content")
                 self.render_collection()
                 self.restore_scroll = {"list_content": scroll}
             # Refresh search too, including when restored after a mode switch.
             self.last_query = ""
-            if self.mode == "Szukaj":
+            if self.mode == "search":
                 self.on_query_change()
             done, failed, total = self.embedding_counts
             if data is not None:
-                message = f"Błąd embedowania: {data}"
+                message = _("Embedding error: {error}").format(error=data)
             elif total:
-                message = f"Embedowanie zakończone: {done}/{total}; błędy: {failed}."
+                message = _(
+                    "Embedding finished: {done}/{total}; errors: {failed}."
+                ).format(done=done, total=total, failed=failed)
             else:
-                message = "Wszystkie opisane memy mają już embeddingi."
+                message = _("All described memes already have embeddings.")
             dpg.set_value("embed_progress", message)
 
     def on_check(self, _sender, value, path):
         selected = self.checked[self.mode]
         selected.add(path) if value else selected.discard(path)
-        dpg.set_value("status", f"Zaznaczono {len(selected)} plików")
+        dpg.set_value(
+            "status",
+            ngettext("Selected {n} file", "Selected {n} files", len(selected)).format(
+                n=len(selected)
+            ),
+        )
 
     def select_collection(self, _sender, _value, path):
         self.list_selected = path
@@ -1215,7 +1279,7 @@ class App:
         )
         dpg.delete_item("collection_rows", children_only=True)
         self.collection_widgets = {}
-        if files and self.collection_filter == "Duplikaty":
+        if files and self.collection_filter == "duplicates":
             groups = {}
             for file in files:
                 groups.setdefault(file.group, []).append(file)
@@ -1223,7 +1287,9 @@ class App:
             for digest, members in groups.items():
                 with dpg.tree_node(
                     parent="collection_rows",
-                    label=f"{Path(members[0].path).name} — {counts[digest]} plików",
+                    label=ngettext(
+                        "{name} — {n} file", "{name} — {n} files", counts[digest]
+                    ).format(name=Path(members[0].path).name, n=counts[digest]),
                     default_open=False,
                 ):
                     self.add_collection_table(members)
@@ -1231,13 +1297,21 @@ class App:
             with dpg.group(parent="collection_rows"):
                 self.add_collection_table(files)
         else:
-            dpg.add_text("Brak plików pasujących do filtrów.", parent="collection_rows")
+            dpg.add_text(_("No files match the filters."), parent="collection_rows")
         if self.list_selected and not any(f.path == self.list_selected for f in files):
             self.list_selected = None
             self.clear_preview()
         dpg.set_value(
             "status",
-            f"{len(files)} plików; zaznaczono {len(self.checked['Lista'])}; ukryto {self.collection_hidden} nieaktualnych",
+            ngettext(
+                "{n} file; selected: {selected}; outdated hidden: {hidden}",
+                "{n} files; selected: {selected}; outdated hidden: {hidden}",
+                len(files),
+            ).format(
+                n=len(files),
+                selected=len(self.checked["list"]),
+                hidden=self.collection_hidden,
+            ),
         )
 
     def add_collection_table(self, files):
@@ -1246,16 +1320,21 @@ class App:
         ):
             dpg.add_table_column(label="✓", width_fixed=True, init_width_or_weight=24)
             for label, weight in (
-                ("Nazwa", 3),
-                ("Folder", 2),
-                ("Kopie", 1),
-                ("Stan indeksowania", 2),
+                (_("Name"), 3),
+                (_("Folder"), 2),
+                (_("Copies"), 1),
+                (_("Indexing state"), 2),
             ):
                 dpg.add_table_column(label=label, init_width_or_weight=weight)
+            states = {
+                None: pgettext("file state", "Undescribed"),
+                "described": pgettext("file state", "Described"),
+                "failed_describe": pgettext("file state", "Description error"),
+            }
             for file in files:
                 with dpg.table_row():
                     dpg.add_checkbox(
-                        default_value=file.path in self.checked["Lista"],
+                        default_value=file.path in self.checked["list"],
                         callback=self.on_check,
                         user_data=file.path,
                     )
@@ -1270,37 +1349,33 @@ class App:
                     self.file_menu(widget, file.digest, file.path)
                     dpg.add_text(str(Path(self.relative_path(file.path)).parent))
                     dpg.add_text(str(file.copies))
-                    state = {
-                        None: "Nieopisany",
-                        "described": "Opisany",
-                        "failed_describe": "Błąd opisu",
-                    }[file.status]
+                    state = states[file.status]
                     if file.indexed:
-                        state += " · w indeksie"
+                        state += " · " + pgettext("file state", "indexed")
                     dpg.add_text(state)
 
-    def close_related(self, *_):
+    def close_related(self, *_args):
         origin = self.related_origin
         self.related_origin = None
         dpg.hide_item("related")
         self.apply_layout()
         if origin:
             self.show(origin)
-        pane = "list_pane" if self.mode == "Szukaj" else "list_content"
+        pane = "list_pane" if self.mode == "search" else "list_content"
         self.restore_scroll = {pane: self.related_scroll}
 
     def queue_copy(self, kind):
         if self.current_path():
             self.pending_copy = (kind, self.preview_path)
 
-    def open_current(self, *_):
+    def open_current(self, *_args):
         if self.current_path():
             try:
                 dpg.set_value("status", open_externally(self.preview_path))
             except OSError as error:
-                dpg.set_value("status", f"nie mogę otworzyć: {error}")
+                dpg.set_value("status", _("cannot open: {error}").format(error=error))
 
-    def on_toggle_desc(self, *_: object) -> None:
+    def on_toggle_desc(self, *_args: object) -> None:
         if self.comparing:
             return
         if not key_down(CTRL_KEYS):
@@ -1308,13 +1383,13 @@ class App:
         self.show_desc = not self.show_desc
         self.apply_layout()
 
-    def on_toggle_full(self, *_: object) -> None:
+    def on_toggle_full(self, *_args: object) -> None:
         if self.comparing:
             return
         self.fullscreen = not self.fullscreen
         self.apply_layout()
 
-    def on_toggle_help(self, *_: object) -> None:
+    def on_toggle_help(self, *_args: object) -> None:
         if dpg.is_item_shown("help"):
             dpg.hide_item("help")
         else:
@@ -1328,11 +1403,11 @@ class App:
         dpg.configure_item("related", show=related and not self.fullscreen)
         dpg.configure_item(
             "list_pane",
-            show=self.mode == "Szukaj" and not self.fullscreen and not related,
+            show=self.mode == "search" and not self.fullscreen and not related,
         )
         dpg.configure_item(
             "list_content",
-            show=self.mode == "Lista" and not self.fullscreen and not related,
+            show=self.mode == "list" and not self.fullscreen and not related,
         )
         has_desc = self.preview_path is not None and self.show_desc
         dpg.configure_item("desc_variant", show=bool(self.variants) and self.show_desc)
@@ -1351,7 +1426,7 @@ class App:
         )
         if available <= 0:
             return
-        pane = "list_pane" if self.mode == "Szukaj" else "list_content"
+        pane = "list_pane" if self.mode == "search" else "list_content"
         if self.related_origin is not None:
             pane = "related"
         width = self.list_widths[self.mode]
@@ -1389,8 +1464,10 @@ class App:
     def update_comparison_queue(self) -> None:
         dpg.set_value(
             "compare_queue_status",
-            f"Opisy: w trakcie {int(self.compare_job is not None)}; "
-            f"oczekujące: {len(self.compare_queue)}"
+            _("Descriptions: running {running}; queued: {queued}").format(
+                running=int(self.compare_job is not None),
+                queued=len(self.compare_queue),
+            )
             if self.compare_job is not None or self.compare_queue
             else "",
         )
@@ -1404,19 +1481,19 @@ class App:
         message = self.compare_job_messages.get(key)
         position = self.comparison_job_position(self.preview_hash, label)
         if position is not None and position > 0:
-            message = f"W kolejce: pozycja {position}."
+            message = _("Queued: position {n}.").format(n=position)
         if message:
             dpg.set_value(f"compare_missing_{side}", message)
         dpg.configure_item(f"compare_missing_{side}", show=missing or bool(message))
         dpg.configure_item(
             f"compare_generate_{side}",
-            label="Opisywanie…"
+            label=_("Describing…")
             if position == 0
-            else "W kolejce"
+            else _("Queued")
             if position is not None
-            else "Dodaj do kolejki"
+            else _("Add to queue")
             if self.compare_job is not None
-            else "Opisz i embeduj ten mem",
+            else _("Describe and embed this meme"),
             show=bool(
                 self.comparing
                 and self.preview_path
@@ -1456,7 +1533,7 @@ class App:
             return
         job, cfg, embed_cfgs = self.compare_queue.popleft()
         self.compare_job = job
-        self.compare_job_messages[job[1:]] = "Opisywanie…"
+        self.compare_job_messages[job[1:]] = _("Describing…")
         dpg.configure_item("embed_described", enabled=False)
         dpg.hide_item("delete_confirm")
         self.pending_delete = []
@@ -1480,7 +1557,9 @@ class App:
                     (path,),
                 ).fetchone()
                 if indexed != (digest,):
-                    raise ValueError("Plik nie jest już zindeksowany pod tym hashem.")
+                    raise ValueError(
+                        _("The file is no longer indexed under this hash.")
+                    )
                 parameters = (
                     digest,
                     cfg["model"],
@@ -1506,7 +1585,9 @@ class App:
                         "codex-cli",
                         "opencode-cli",
                     ):
-                        raise ValueError(f"Nieznany backend: {backend}")
+                        raise ValueError(
+                            _("Unknown backend: {backend}").format(backend=backend)
+                        )
                     prompt = (
                         Path(__file__).parent
                         / "prompts"
@@ -1519,7 +1600,7 @@ class App:
                         shutil.copyfile(path, snapshot)
                         if hashlib.sha256(snapshot.read_bytes()).hexdigest() != digest:
                             raise ValueError(
-                                "Zawartość pliku zmieniła się; wykonaj skan."
+                                _("The file content has changed; run a scan.")
                             )
                         describe_stage.describe_rows(
                             con,
@@ -1538,7 +1619,9 @@ class App:
                             "AND prompt_version = ? AND effort_level IS ?",
                             parameters,
                         ).fetchone()
-                        raise ValueError(row[0] if row else "Nie zapisano opisu.")
+                        raise ValueError(
+                            row[0] if row else _("No description was saved.")
+                        )
                 # Committed description becomes visible before the embedding request.
                 self.compare_job_events.put(("described", job, None))
                 stage = "embedding"
@@ -1557,15 +1640,15 @@ class App:
             path, digest, label = job
             key = (digest, label)
             if stage == "described":
-                self.compare_job_messages[key] = "Opis gotowy. Embedowanie…"
+                self.compare_job_messages[key] = _("Description ready. Embedding…")
             else:
                 self.compare_job = None
                 dpg.configure_item("embed_described", enabled=not self.compare_queue)
                 if error:
                     self.compare_job_messages[key] = (
-                        "Opis zapisany. Nie udało się utworzyć embeddingu."
+                        _("Description saved. Creating the embedding failed.")
                         if stage == "embedding"
-                        else f"Nie udało się opisać: {error}"
+                        else _("Describing failed: {error}").format(error=error)
                     )
                 else:
                     self.compare_job_messages.pop(key, None)
@@ -1575,11 +1658,11 @@ class App:
                     + (
                         self.compare_job_messages[key]
                         if error
-                        else "opis i embedding gotowe."
+                        else _("description and embedding ready.")
                     ),
                 )
                 self.last_query = ""
-                if self.mode == "Szukaj" and not self.comparing:
+                if self.mode == "search" and not self.comparing:
                     self.on_query_change()
             self.load_comparison_catalog()
             if self.preview_hash == digest:
@@ -1599,7 +1682,7 @@ class App:
                 self.collection, self.collection_hidden = collection_files(
                     self.con, self.cfg["describe"]
                 )
-                if self.mode == "Lista" and not self.comparing:
+                if self.mode == "list" and not self.comparing:
                     scroll = dpg.get_y_scroll("list_content")
                     self.render_collection()
                     self.restore_scroll = {
@@ -1619,14 +1702,16 @@ class App:
             for model, prompt, effort in rows
         }
         for side, filters in enumerate(self.compare_filters):
-            for index, (key, _) in enumerate(COMPARE_PARAMETERS):
+            for index, (key, _label) in enumerate(COMPARE_PARAMETERS):
                 values = sorted(
                     {
-                        row[index] if row[index] is not None else COMPARE_DEFAULT_EFFORT
+                        row[index]
+                        if row[index] is not None
+                        else self.compare_default_effort
                         for row in rows
                     }
                 )
-                items = list(dict.fromkeys([COMPARE_ANY, *values, filters[key]]))
+                items = list(dict.fromkeys([self.compare_any, *values, filters[key]]))
                 dpg.configure_item(f"compare_filter_{side}_{key}", items=items)
                 dpg.set_value(f"compare_filter_{side}_{key}", filters[key])
 
@@ -1636,10 +1721,10 @@ class App:
             label
             for label, parameters in self.compare_catalog.items()
             if all(
-                filters[key] == COMPARE_ANY
+                filters[key] == self.compare_any
                 or filters[key]
-                == (value if value is not None else COMPARE_DEFAULT_EFFORT)
-                for (key, _), value in zip(COMPARE_PARAMETERS, parameters)
+                == (value if value is not None else self.compare_default_effort)
+                for (key, _label), value in zip(COMPARE_PARAMETERS, parameters)
             )
         ]
 
@@ -1661,15 +1746,17 @@ class App:
         dpg.set_value(f"compare_variant_{side}", selected)
         dpg.set_value(
             f"compare_match_count_{side}",
-            f"Opis: {selected}"
+            _("Description: {variant}").format(variant=selected)
             if len(labels) == 1
-            else f"Warianty dla tego mema: {len(available)} / {len(labels)}",
+            else _("Variants for this meme: {available} / {total}").format(
+                available=len(available), total=len(labels)
+            ),
         )
         dpg.set_value(
             f"compare_missing_{side}",
-            "Brak wybranego wariantu opisu dla tego mema."
+            _("This meme has no description in the selected variant.")
             if labels
-            else "Brak opisów pasujących do wybranych parametrów.",
+            else _("No descriptions match the selected parameters."),
         )
         dpg.configure_item(
             f"compare_missing_{side}", show=selected not in self.variants
@@ -1693,11 +1780,11 @@ class App:
         parameters = []
         for filters in self.compare_filters:
             terms = ["d.hash = f.hash", "d.status = 'described'"]
-            for key, _ in COMPARE_PARAMETERS:
+            for key, _label in COMPARE_PARAMETERS:
                 value = filters[key]
-                if value == COMPARE_ANY:
+                if value == self.compare_any:
                     continue
-                if key == "effort_level" and value == COMPARE_DEFAULT_EFFORT:
+                if key == "effort_level" and value == self.compare_default_effort:
                     terms.append("d.effort_level IS NULL")
                 else:
                     terms.append(f"d.{key} = ?")
@@ -1733,7 +1820,7 @@ class App:
             self.clear_preview(keep_comparison=True)
         self.render_comparison()
 
-    def open_comparison(self, *_: object, from_preview: bool = True) -> None:
+    def open_comparison(self, *_args: object, from_preview: bool = True) -> None:
         if self.comparing:
             return
         resume = not from_preview and bool(self.compare_source_paths)
@@ -1743,8 +1830,8 @@ class App:
             rows = related_files(
                 self.con, self.preview_hash, identical=self.related_identical
             )
-            paths, _ = current_result_paths([(h, p) for h, p, _, _ in rows])
-        elif self.mode == "Szukaj":
+            paths, _hidden = current_result_paths([(row[0], row[1]) for row in rows])
+        elif self.mode == "search":
             paths = self.paths
         else:
             paths = [
@@ -1778,7 +1865,7 @@ class App:
             self.compare_variants[0] = dpg.get_value("desc_variant")
         self.load_comparison_catalog()
         self.comparing = True
-        dpg.set_value("view_mode", "Porównanie")
+        dpg.set_value("view_mode", self.mode_labels["compare"])
         self.apply_layout()
         self.refresh_comparison_paths(selected_path)
         self.restore_scroll = {
@@ -1787,7 +1874,7 @@ class App:
         }
         dpg.focus_item("compare_back")
 
-    def close_comparison(self, *_: object, restore: bool = True) -> None:
+    def close_comparison(self, *_args: object, restore: bool = True) -> None:
         if not self.comparing:
             return
         origin = self.compare_origin
@@ -1796,7 +1883,7 @@ class App:
         self.compare_scroll = dpg.get_y_scroll("compare_fields")
         self.comparing = False
         self.compare_origin = None
-        dpg.set_value("view_mode", self.mode)
+        dpg.set_value("view_mode", self.mode_labels[self.mode])
         self.clear_comparison_image()
         self.apply_layout()
         if restore and origin is not None:
@@ -1849,7 +1936,8 @@ class App:
         self.render_comparison_fields()
         dpg.configure_item(f"compare_missing_{side}", show=value not in self.variants)
         dpg.set_value(
-            f"compare_missing_{side}", "Brak wybranego wariantu opisu dla tego mema."
+            f"compare_missing_{side}",
+            _("This meme has no description in the selected variant."),
         )
         self.update_comparison_generation(side)
         dpg.configure_item("compare_copy", enabled=self.can_copy_comparison())
@@ -1867,9 +1955,9 @@ class App:
             )
         )
 
-    def copy_comparison(self, *_: object) -> None:
+    def copy_comparison(self, *_args: object) -> None:
         if not self.can_copy_comparison():
-            dpg.set_value("status", "Wybierz dwa dostępne opisy do skopiowania.")
+            dpg.set_value("status", _("Select two available descriptions to copy."))
             return
         data = self.comparison_data(
             self.preview_path,
@@ -1878,7 +1966,7 @@ class App:
             [self.variants[label] for label in self.compare_variants],
         )
         dpg.set_clipboard_text(json.dumps(data, ensure_ascii=False, indent=2))
-        dpg.set_value("status", "Skopiowano porównanie opisów jako JSON.")
+        dpg.set_value("status", _("Copied the description comparison as JSON."))
 
     def comparison_data(
         self,
@@ -1905,7 +1993,7 @@ class App:
             data[side] = {
                 **dict(
                     zip(
-                        (key for key, _ in COMPARE_PARAMETERS),
+                        (key for key, _label in COMPARE_PARAMETERS),
                         self.compare_catalog[label],
                     )
                 ),
@@ -1923,9 +2011,11 @@ class App:
             )
         )
 
-    def copy_all_comparisons(self, *_: object) -> None:
+    def copy_all_comparisons(self, *_args: object) -> None:
         if not self.can_copy_all_comparisons():
-            dpg.set_value("status", "Wybierz warianty opisów i niepustą listę memów.")
+            dpg.set_value(
+                "status", _("Select description variants and a non-empty meme list.")
+            )
             return
         paths = self.compare_paths.copy()
         requested = set(paths)
@@ -1962,17 +2052,16 @@ class App:
                 continue
             comparisons.append(self.comparison_data(path, digest, size, [left, right]))
         if not comparisons:
-            dpg.set_value(
-                "status", "Brak memów z oboma wybranymi wariantami do skopiowania."
-            )
+            dpg.set_value("status", _("No memes with both selected variants to copy."))
             return
         dpg.set_clipboard_text(
             json.dumps({"comparisons": comparisons}, ensure_ascii=False, indent=2)
         )
         dpg.set_value(
             "status",
-            f"Skopiowano porównania jako JSON. Pary: {len(comparisons)}; "
-            f"pominięte memy: {len(paths) - len(comparisons)}.",
+            _(
+                "Copied comparisons as JSON. Pairs: {pairs}; skipped memes: {skipped}."
+            ).format(pairs=len(comparisons), skipped=len(paths) - len(comparisons)),
         )
 
     def render_comparison(self) -> None:
@@ -1989,9 +2078,9 @@ class App:
             "compare_path",
             dpg.get_value("preview_path")
             if self.current_tex is not None
-            else "Brak memów pasujących do obu stron."
+            else _("No memes match both sides.")
             if not self.compare_paths
-            else "Nie można wyświetlić wybranego mema.",
+            else _("Cannot display the selected meme."),
         )
         dpg.configure_item("compare_image_hint", show=self.current_tex is not None)
         for side in range(2):
@@ -2033,8 +2122,10 @@ class App:
                     for side, fields in enumerate(values):
                         with dpg.group():
                             if self.compare_variants[side] in self.variants:
-                                dpg.add_text(key or "Opis", color=KEY_COLOR)
-                                dpg.add_text(fields.get(key, "(brak pola)"), wrap=wrap)
+                                dpg.add_text(key or _("Description"), color=KEY_COLOR)
+                                dpg.add_text(
+                                    fields.get(key, _("(missing field)")), wrap=wrap
+                                )
                             else:
                                 dpg.add_text("")
         self.restore_scroll = {
@@ -2064,13 +2155,13 @@ class App:
             dpg.configure_item(
                 f"compare_match_count_{side}", wrap=max(1, width // 2 - 24)
             )
-            for key, _ in COMPARE_PARAMETERS:
+            for key, _label in COMPARE_PARAMETERS:
                 dpg.configure_item(
                     f"compare_filter_label_{side}_{key}", wrap=max(1, width // 6 - 16)
                 )
         self.render_comparison_fields()
 
-    def open_comparison_zoom(self, *_: object) -> None:
+    def open_comparison_zoom(self, *_args: object) -> None:
         if not self.comparing or self.current_tex is None:
             return
         self.close_comparison_zoom()
@@ -2090,7 +2181,7 @@ class App:
             "compare_zoom", width=window_w, height=window_h, pos=(16, 16), show=True
         )
 
-    def close_comparison_zoom(self, *_: object) -> None:
+    def close_comparison_zoom(self, *_args: object) -> None:
         dpg.hide_item("compare_zoom")
         if dpg.does_item_exist("compare_zoom_image"):
             dpg.delete_item("compare_zoom_image")
@@ -2107,7 +2198,7 @@ class App:
         # The combo keeps nav focus after picking; hand the keyboard back.
         dpg.focus_item("query")
 
-    def on_tab(self, *_: object) -> None:
+    def on_tab(self, *_args: object) -> None:
         if self.comparing:
             return
         labels = list(self.variants)
@@ -2176,16 +2267,20 @@ class App:
         try:
             frames = self.description_frames(self.preview_path, self.preview_hash)
         except Exception as error:  # noqa: BLE001 - Pillow/FFmpeg failures vary
-            dpg.set_value("status", f"nie mogę wyodrębnić klatek: {error}")
+            dpg.set_value(
+                "status", _("cannot extract frames: {error}").format(error=error)
+            )
             return
         self.frame_index = (self.frame_index + delta) % len(frames)
         frame, timestamp = frames[self.frame_index]
         if not self.set_preview_texture(frame):
-            dpg.set_value("status", f"nie mogę wczytać klatki: {frame}")
+            dpg.set_value("status", _("cannot load frame: {frame}").format(frame=frame))
             return
         dpg.set_value(
             "frame_label",
-            f"klatka {self.frame_index + 1}/{len(frames)} · {timestamp or 0:.3f} s",
+            _("frame {n}/{total} · {seconds:.3f} s").format(
+                n=self.frame_index + 1, total=len(frames), seconds=timestamp or 0
+            ),
         )
 
     def set_preview_texture(self, image_path: str) -> bool:
@@ -2222,10 +2317,15 @@ class App:
             with open(path, "rb") as file:
                 digest = hashlib.file_digest(file, "sha256").hexdigest()
         except OSError as e:
-            dpg.set_value("status", f"nie mogę wczytać: {path}: {e}")
+            dpg.set_value(
+                "status", _("cannot load: {path}: {error}").format(path=path, error=e)
+            )
             return False
         if (digest,) not in indexed:
-            dpg.set_value("status", f"plik zniknął lub zmienił zawartość: {path}")
+            dpg.set_value(
+                "status",
+                _("the file is gone or its content changed: {path}").format(path=path),
+            )
             return False
         # load_image reports an unreadable file by returning None, not raising.
         try:
@@ -2235,7 +2335,10 @@ class App:
             loaded = None
         if loaded is None:
             # Keep descriptions and navigation available for unsupported images.
-            dpg.set_value("status", f"nie mogę wczytać: {path} — pokazuję placeholder")
+            dpg.set_value(
+                "status",
+                _("cannot load: {path} — showing a placeholder").format(path=path),
+            )
             w, h = 420, 210
             data = [0.15, 0.15, 0.15, 1.0] * (w * h)
         else:
@@ -2256,21 +2359,21 @@ class App:
         )
         self.preview_path = path
         self.preview_hash = digest
-        image_info = f"{w} × {h} px" if loaded is not None else "Brak podglądu obrazu"
+        image_info = f"{w} × {h} px" if loaded is not None else _("No image preview")
         if common.is_video(path):
-            image_info += " · film"
+            image_info += " · " + _("video")
         dpg.set_value("preview_path", f"{image_info} · {self.relative_path(path)}")
         dpg.show_item("preview_path")
         self.frame_index = 0
-        dpg.set_value("frame_label", "pierwsza klatka")
+        dpg.set_value("frame_label", _("first frame"))
         dpg.configure_item("frame_nav", show=is_animation(path))
         dpg.configure_item(
             "copy_file",
-            label="Kopiuj film" if common.is_video(path) else "Kopiuj obraz",
+            label=_("Copy video") if common.is_video(path) else _("Copy image"),
         )
         dpg.show_item("file_actions")
         group = related_files(self.con, digest, identical=False)
-        available, _ = current_result_paths([(h, p) for h, p, _, _ in group])
+        available, _hidden = current_result_paths([(row[0], row[1]) for row in group])
         dpg.configure_item("preview_actions", show=len(available) > 1)
         self.img_size = (w, h)
         self.fit_image()
@@ -2386,9 +2489,15 @@ class App:
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     common.add_config_argument(parser)
+    i18n.add_language_argument(parser)
 
 
 def run(args: argparse.Namespace, cfg: dict) -> None:
+    language = getattr(args, "language", None) or cfg.get("gui", {}).get("language")
+    try:
+        i18n.set_language(language)
+    except ValueError as error:
+        sys.exit(f"memy gui: {error}")
     App(cfg).run()
 
 

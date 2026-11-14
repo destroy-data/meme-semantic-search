@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from memy import scan as scan_stage
+from memy.i18n import _
 
 
 def current_result_paths(hits: list[tuple[str, str]]) -> tuple[list[str], int]:
@@ -112,14 +113,14 @@ def filter_collection(
         for f in files
         if query in f.path.casefold()
         and (
-            kind == "Wszystkie"
-            or kind == "Duplikaty"
+            kind == "all"
+            or kind == "duplicates"
             and groups[f.group] > 1
-            or kind == "Identyczne kopie"
+            or kind == "identical"
             and f.copies > 1
-            or kind == "Nieopisane"
+            or kind == "undescribed"
             and f.status is None
-            or kind == "Błędy"
+            or kind == "failed"
             and f.status == "failed_describe"
         )
     ]
@@ -139,7 +140,7 @@ def preserve_group_index(con, digest, group):
     """Keep a group's search index when its indexed member loses its last copy."""
     if not has_index(con, digest):
         return
-    marks = ",".join("?" for _ in group)
+    marks = ",".join("?" * len(group))
     rows = con.execute(
         f"SELECT hash, path FROM ({indexed_files_sql(con)}) WHERE hash IN ({marks})",
         group,
@@ -188,7 +189,7 @@ def delete_files(con, files, threshold):
                 "SELECT hash FROM meme_files WHERE path = ?", (path,)
             ).fetchone()
             if recorded != (digest,) or not scan_stage.file_matches(path, digest, {}):
-                raise OSError("plik zniknął lub zmienił zawartość (SHA-256)")
+                raise OSError(_("the file is gone or its content changed (SHA-256)"))
             Path(path).unlink()
         except OSError as error:
             errors.append((path, str(error)))

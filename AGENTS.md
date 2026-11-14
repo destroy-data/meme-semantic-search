@@ -4,6 +4,8 @@
 
 Code lives in the `memy` package under `src/memy/`. Stages are `scan.py`, `describe.py`, `embed.py`, `search.py`, and `gui.py`. `__main__.py` aggregates commands (console script `memy`); `common.py` handles configuration, SQLite, and embeddings; `collection.py` holds GUI-independent collection browsing and deletion. `gui.py` is the only module importing `dearpygui`, which is the optional `gui` extra. Each stage exposes `add_arguments(parser)`, `run(args, cfg)`, and `main(argv=None)`.
 
+`i18n.py` loads GUI translations: English is the source language, other languages live in `src/memy/locale/<lang>.po` and are compiled to the `.mo` format in memory at startup (no `.mo` files on disk). Select one with `[gui] language` or `memy gui --language`. After changing GUI strings, run `scripts/update_translations.sh` (needs GNU gettext) and translate new or fuzzy entries. Wrap user-visible strings in `_()`/`ngettext()`/`pgettext()` with `str.format` placeholders (f-strings cannot be extracted); use `N_()` for module-level constants and translate them where shown. Never use `_` as a throwaway variable in modules that import it. Modes and collection filters are internal ids; widgets show translated labels.
+
 `src/memy/schema.sql` defines storage; `src/memy/description_schema.json` defines model output. Both are package data found next to the modules. Prompts live in `src/memy/prompts/`, comparison queries in `sql/`, tooling in `scripts/`, and images in configured `image_dir`. Architecture and historical notes are included below; check implementation claims against code and schemas.
 
 ## Build, Test, and Development Commands
