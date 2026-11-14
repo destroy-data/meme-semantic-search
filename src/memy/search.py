@@ -139,7 +139,8 @@ def search_with_hashes(
 ) -> list[tuple[str, str]]:
     """Return ranked pairs; 0 means FTS only, 1 means embeddings only.
 
-    `embed_cfg["model"]` selects which embedding model's vectors are searched.
+    `embed_cfg["model"]` selects which embedding model's vectors are searched;
+    its optional `query_prefix` is prepended to the embedded query only.
     `variant` ({model, prompt_version, effort_level}, e.g. `cfg["describe"]`)
     selects one description per meme; None searches every indexed description.
     """
@@ -148,7 +149,8 @@ def search_with_hashes(
     model = embed_cfg["model"]
     rankings = []
     if embedding_weight > 0:
-        vector = common.request_embedding(embed_cfg, query)
+        prefix = embed_cfg.get("query_prefix", "")
+        vector = common.request_embedding(embed_cfg, prefix + query)
         rankings.append(
             (embedding_weight, vec_hits(con, vector, model, variant, exact))
         )

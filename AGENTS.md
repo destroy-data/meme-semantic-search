@@ -548,7 +548,9 @@ for selection), `--all-variants`, `--embed-model NAME`.
 CLI: takes a free-text query, returns top-N file paths.
 
 1. Embed the query with the selected embedding model (`[embed]`, or
-   `--embed-model NAME` from `[embed]`/`[[embed.extra]]`).
+   `--embed-model NAME` from `[embed]`/`[[embed.extra]]`). That table's
+   optional `query_prefix` (PolDense: `"[query]: "`) is prepended to the
+   query only; descriptions are always embedded without it.
 2. Select index entries: by default one per meme for the `[describe]` variant
    with the same fallback order as embed (`--desc-model`, `--prompt`,
    `--effort`, `""` = no effort, override parts of it); `--exact` keeps only

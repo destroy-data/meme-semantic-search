@@ -31,9 +31,11 @@ model = "bge-m3"  # searched by default
 
 # Optional further embedding models. `embed` adds a vector from each next to
 # bge-m3's; `search --embed-model NAME` / `embed --embed-model NAME` pick one.
-# base_url and api_key default to [embed]'s.
+# base_url and api_key default to [embed]'s. query_prefix (any [embed] table)
+# is prepended to search queries only; descriptions are embedded unprefixed.
 # [[embed.extra]]
 # model = "hf.co/kprzyb/PolDense-400M-GGUF:F16"
+# query_prefix = "[query]: "  # PolDense; GGUF runtimes do not add it
 
 # Optional: transcribe video soundtracks at the start of describe and give the
 # transcript to the describing model with the frames. Omit to send frames only.
