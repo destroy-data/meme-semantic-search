@@ -187,6 +187,8 @@ CLI search prints one matching path per line. `-n` / `--top` changes the number
 of results. `--show` opens them in an installed viewer (`imv`, `feh`, `nsxiv` or
 `loupe`). Try describing the punchline or intended reaction when a literal scene
 description does not find the meme.
+The GUI is in English by default; switch to Polish with `[gui] language = "pl"`
+in the config or `uv run memy gui --language pl`.
 
 Every command accepts `--config FILE` after its name; the default is
 `config.toml`. For example:
