@@ -28,3 +28,7 @@ gemini-sample.json
 # Local helper scripts
 /describe-lista.fish
 /elo
+
+# Local evaluation notes (collection paths)
+/burned.md
+/lista

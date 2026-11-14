@@ -201,33 +201,33 @@ uv run memy search --config config.test.toml "widening the belt"
 
 ## Using the desktop GUI
 
-1. **Szukaj** searches as you type and previews the selected result. The
-   **FTS / Embeddingi** slider balances exact words against semantic similarity;
+1. **Search** searches as you type and previews the selected result. The
+   FTS/embedding slider (labelled with the embedding share, e.g. `50% emb.`) balances exact words against semantic similarity;
    it starts with equal weights. Fully left uses only full-text search and does
    not need the embedding service. Fully right uses only embeddings.
-2. **Lista** browses all scanned physical files, including those without a
+2. **List** browses all scanned physical files, including those without a
    description or embedding. Its text field filters filenames and paths locally.
-   Filters include **Wszystkie**, **Duplikaty**, **Identyczne kopie**,
-   **Nieopisane** and **Błędy**. Description states refer to the active
-   model/prompt/effort settings; the separate “w indeksie” marker indicates an
+   Filters include **All**, **Duplicates**, **Identical copies**,
+   **Undescribed** and **Errors**. Description states refer to the active
+   model/prompt/effort settings; the separate “indexed” marker indicates an
    existing search vector, possibly from another description variant.
 3. **Preview and descriptions.** Select a file to view it and inspect its saved
    description variants. You can copy the image or its path and open it in an
-   external viewer. F1 shows keyboard shortcuts. Switching between Szukaj and
-   Lista preserves their queries and selections. Drag the vertical divider
+   external viewer. F1 shows keyboard shortcuts. Switching between Search and
+   List preserves their queries and selections. Drag the vertical divider
    between the list and preview to resize them in either mode, including
    duplicate lists. Each mode remembers its width until the app closes;
    F11 temporarily expands the preview to the full width.
-4. **Compare descriptions.** Open the **Porównanie** view beside **Szukaj** and
-   **Lista**, or use **Porównaj opisy** on a selected meme. Each column filters
-   model, prompt and reasoning effort independently. **Dowolny** accepts any
-   value; **Brak ustawienia** selects descriptions without an explicit effort,
+4. **Compare descriptions.** Open the **Compare** view beside **Search** and
+   **List**, or use **Compare descriptions** on a selected meme. Each column filters
+   model, prompt and reasoning effort independently. **Any** accepts any
+   value; **Not set** selects descriptions without an explicit effort,
    separately from the explicit `none` level. Options come from successful
    descriptions across the database. When several configurations match, a list
    below the filters selects the actual variant; a single match is selected
    automatically. This lets you compare one specific prompt against several
    others. Matching fields line up and scroll together; click the shared
-   thumbnail to enlarge it. **Poprzedni mem / Następny mem** browse the search
+   thumbnail to enlarge it. **Previous meme / Next meme** browse the search
    results, filtered list or duplicate group used to open comparison. Parameter
    filters keep only memes with at least one matching successful description
    on each side. Broadening filters restores hidden memes in their original
@@ -235,11 +235,11 @@ uv run memy search --config config.test.toml "widening the belt"
    an existing selection, comparison starts with the collection. Missing
    variants show a message instead of another description. Switching views
    preserves comparison filters, variants, meme and scroll until the app closes.
-   **Opisz i embeduj ten mem** appears beside a missing variant. It describes
+   **Describe and embed this meme** appears beside a missing variant. It describes
    only that meme with the exact selected model, prompt and effort, using the
    configured description backend. The saved description appears immediately,
    before embedding finishes. Navigation remains available during processing.
-   While a task is running, **Dodaj do kolejki** schedules another missing
+   While a task is running, **Add to queue** schedules another missing
    variant. Tasks run in click order, one at a time, each with its own captured
    model, prompt, effort and backend/embedding settings. Later changes to filters
    or selections do not alter queued tasks. The header shows the waiting count;
@@ -251,28 +251,28 @@ uv run memy search --config config.test.toml "widening the belt"
    that exact description, replacing any existing vector and FTS entry together.
    An embedding failure shows a small message, preserves the saved description
    and previous indexes, and is not retried.
-   **Wróć** or Esc restores the original view; Esc first closes an enlarged image.
-   **Kopiuj porównanie** copies a JSON object with `meme`, `left`, and `right`:
+   **Back** or Esc restores the original view; Esc first closes an enlarged image.
+   **Copy comparison** copies a JSON object with `meme`, `left`, and `right`:
    the relative image path, SHA-256 and dimensions, plus each selected variant's
    model, prompt version, reasoning effort and complete description. Empty fields
    and lists are preserved. The button requires two available descriptions.
-   **Kopiuj wszystkie pary** copies `{"comparisons": [...]}` for the current list,
+   **Copy all pairs** copies `{"comparisons": [...]}` for the current list,
    in its displayed order, using exactly the two variants selected below the
    parameter filters. Memes missing either selected variant or whose files have
    changed or become unavailable are skipped; the status shows copied and
    skipped counts. Export preserves the current preview and selections.
-5. **Duplicates.** Use **Grupa duplikatów** for visually similar images or
-   **Identyczne kopie** for files with identical contents. Selecting a path
+5. **Duplicates.** Use **Duplicate group** for visually similar images or
+   **Identical copies** for files with identical contents. Selecting a path
    previews that physical file; copying and opening then use that copy.
-   **Wróć do wyniku** returns to the result, and Esc closes the duplicate list.
-6. **Embeduj opisane** in Lista fills missing search indexes in the background
+   **Back to result** returns to the result, and Esc closes the duplicate list.
+6. **Embed described** in List fills missing search indexes in the background
    for the whole collection, regardless of filters or checked files. It uses
    each representative's newest successful description across all models,
    prompts and effort levels, embedded by every configured embedding model.
    Already-indexed descriptions are skipped. Progress and failures
    are shown; clicking again retries missing embeddings.
-7. **Deleting files.** Select checkboxes in Lista and use **Usuń zaznaczone
-   pliki**, or right-click a file for **Usuń plik** / **Usuń resztę z grupy**.
+7. **Deleting files.** Select checkboxes in List and use **Delete selected
+   files**, or right-click a file for **Delete file** / **Delete the rest of the group**.
    The latter keeps the clicked file. Deletion is permanent and requires
    confirmation. The application checks file contents immediately before
    deleting; replaced files and filesystem failures are reported. Removing one
@@ -281,7 +281,7 @@ uv run memy search --config config.test.toml "widening the belt"
 
 Scanning and batch describing are run from the CLI. Restart the GUI after a CLI scan
 or indexing run to reload collection data. Background embedding from the GUI
-refreshes its table and search results automatically. Browsing Lista and previews
+refreshes its table and search results automatically. Browsing List and previews
 works without Ollama; semantic search and embedding need it running.
 
 ## Using memy as a library
@@ -339,9 +339,9 @@ variants never overwrite each other. CLI `embed` indexes, per meme, the
 description matching `[describe]`, falling back to the same model and prompt at
 another effort, then the same prompt, then any description (newest first).
 `--all-variants` indexes every successful description, `--model` changes whose
-descriptions are preferred. The GUI's **Embeduj opisane** uses the newest
+descriptions are preferred. The GUI's **Embed described** uses the newest
 successful description across all configurations, and the comparison view's
-**Opisz i embeduj ten mem** adds the generated variant next to existing ones.
+**Describe and embed this meme** adds the generated variant next to existing ones.
 
 Embedding models are `[embed]` plus any `[[embed.extra]]` tables (see
 `config.example.toml`); every embed run fills vectors for all of them, or only
@@ -367,7 +367,7 @@ recognized usage-limit errors wait and retry automatically. Some free OpenCode
 gateways can reject the adapter's restricted tool setup even when the model
 works in a normal client session.
 
-If a similar image seems missing from search, check its duplicate group in Lista.
+If a similar image seems missing from search, check its duplicate group in List.
 Groups can contain false positives; lower `phash_threshold` and regroup to make
 matching stricter. Scanning and grouping do not delete image files.
 

@@ -1,136 +1,137 @@
-# Checklista ręcznej weryfikacji
+# Manual verification checklist
 
-Projekt nie ma jeszcze automatycznego test suite. Ta lista definiuje minimum,
-które należy przejść na małej, kontrolowanej kolekcji przed pełnym indeksowaniem
-albo po zmianie dowolnego etapu pipeline'u.
+The project has no automated test suite yet. This list defines the minimum to
+go through on a small, controlled collection before a full indexing run or after
+changing any pipeline stage.
 
-## Przygotowanie
+## Preparation
 
-- [ ] Pracuj na kopii kilkunastu obrazów, nie na właściwej kolekcji. Ustaw w
-  testowym TOML osobne `db_path` oraz `image_dir`.
-- [ ] W próbce umieść: kilka niezależnych memów, dwie identyczne kopie pliku,
-  parę wyraźnie podobnych obrazów, jeden uszkodzony plik z rozszerzeniem obrazu
-  oraz co najmniej jeden mem po polsku i po angielsku.
-- [ ] Do ręcznej oceny opisów nie używaj „spalonych” próbek wymienionych
-  w `AGENTS.md`: `045f3bf5`, `0be81bf3`, `b8bbfce6`, `6e7aa3c5`.
-  Ostatnia to przykład 4 z `vcodex3`: prowadząca pandemiczne lekcje TVP
-  zestawiona z Monkey Puppet. Kontekst programów potwierdził właściciel zbioru.
-- [ ] Dla `vcodex3` sprawdź też obrazek bez żartu: `the_clue` opisuje temat
-  lub przekaz, a `humor_type` może być `[]`, jeśli żadna kategoria nie pasuje.
-  Ta wersja promptu wprowadza obsługę pustej listy w schemacie; starsze
-  poprawne opisy pozostają zgodne z rozszerzonym kontraktem.
-- [ ] Uruchom `ruff format . && ruff check .`; oba polecenia muszą przejść bez
-  zmian i błędów.
-- [ ] Po `uv sync --locked` (bez extra `gui`) etapy CLI działają, a
-  `uv run memy gui` wypisuje podpowiedź `uv sync --extra gui` i kończy się
-  niezerowym kodem. Do testów GUI użyj `uv sync --locked --extra gui`.
-- [ ] Względne `db_path` i `image_dir` w testowym TOML działają także po
-  uruchomieniu z innego katalogu (`--config` ze ścieżką bezwzględną).
+- [ ] Work on a copy of a dozen or so images, not on the real collection. Set a
+  separate `db_path` and `image_dir` in a test TOML.
+- [ ] Include in the sample: several unrelated memes, two identical copies of a
+  file, a pair of clearly similar images, one corrupted file with an image
+  extension, and at least one meme in Polish and one in English.
+- [ ] Do not use the "burned" samples listed in `AGENTS.md` for manual review of
+  descriptions: `045f3bf5`, `0be81bf3`, `b8bbfce6`, `6e7aa3c5`.
+  The last one is example 4 from `vcodex3`: a host of TVP's pandemic-era school
+  lessons paired with Monkey Puppet.
+- [ ] For `vcodex3`, also check an image without a joke: `the_clue` describes the
+  topic or message, and `humor_type` may be `[]` if no category fits.
+  This prompt version introduces empty-list support in the schema; older valid
+  descriptions remain compatible with the extended contract.
+- [ ] Run `ruff format . && ruff check .`; both must pass without changes or
+  errors.
+- [ ] After `uv sync --locked` (without the `gui` extra) the CLI stages work, and
+  `uv run memy gui` prints the hint `uv sync --extra gui` and exits with a
+  non-zero code. For GUI tests use `uv sync --locked --extra gui`.
+- [ ] Relative `db_path` and `image_dir` in the test TOML also work when run
+  from another directory (`--config` with an absolute path).
 
-## Skanowanie i deduplikacja
+## Scanning and deduplication
 
 ```sh
 uv run memy scan --config config.test.toml
 ```
 
-- [ ] Liczba `new` odpowiada liczbie różnych zawartości plików; identyczne
-  kopie nie tworzą dodatkowych wierszy w `memes`, ale każda ma osobny wpis
-  w `meme_files`. Drugi skan zachowuje wszystkie ścieżki i ścieżkę główną.
-- [ ] Ustaw `image_dir` relatywnie, a potem sprawdź w SQLite, że każda wartość
-  `memes.path` jest ścieżką bezwzględną.
-- [ ] Ustaw `exclude_paths` na jeden plik i jeden podkatalog względem `image_dir`.
-  Sprawdź, że oba są pominięte przez `scan` i `all`, a katalog o podobnej nazwie
-  nadal jest skanowany. Wcześniej zapisane ścieżki wykluczonych plików znikają
-  z `meme_files`. Ścieżki bezwzględne i zawierające `..` są odrzucane.
-- [ ] Uszkodzony obraz jest zgłoszony jako pominięty, ale nie przerywa skanu.
-- [ ] Drugi identyczny skan ma `0 new` i nie tworzy kolejnych rekordów.
-- [ ] W SQLite każda grupa podobnych obrazów ma dokładnie jednego
-  reprezentanta (`perceptual_duplicate_of IS NULL`), a reszta wskazuje jego
-  hash.
-- [ ] Zmień tymczasowo `phash_threshold`, uruchom
-  `scan --regroup-only` i sprawdź, że zmieniają się tylko grupy, nie opisy ani
-  wektory.
-- [ ] Usuń główną identyczną kopię i wykonaj skan: inna istniejąca kopia
-  zostaje główną, a hash, opisy i embedding pozostają. `--path` akceptuje
-  również kopię, która nie jest główna. Po podmianie zawartości pliku jego
-  wpis w `meme_files` wskazuje nowy hash, a stary mem korzysta z innej kopii.
-- [ ] Usuń wszystkie kopie pliku testowego i uruchom zwykły `scan`: ścieżki,
-  FTS i wektor znikają, ale `memes` i `descriptions` zostają. Ponowny skan nie
-  przywraca starych ścieżek, a `memes.path` jest pusty. `describe`, `embed`,
-  `search` i GUI pomijają archiwalny rekord; po przywróceniu identycznego pliku
-  jego opis jest używany ponownie, a embedding można odbudować. Pozostała grupa
-  jest poprawnie zgrupowana.
-- [ ] Przy `--prune-missing` sprawdź także nieistniejącą ścieżkę zapisaną poza
-  aktualnym `image_dir`; jej opis pozostaje w bazie.
+- [ ] The `new` count matches the number of distinct file contents; identical
+  copies do not create extra rows in `memes`, but each has its own entry in
+  `meme_files`. A second scan keeps all paths and the primary path.
+- [ ] Set `image_dir` to a relative path, then check in SQLite that every
+  `memes.path` value is absolute.
+- [ ] Set `exclude_paths` to one file and one subdirectory relative to
+  `image_dir`. Check that both are skipped by `scan` and `all`, while a
+  directory with a similar name is still scanned. Previously stored paths of
+  excluded files disappear from `meme_files`. Absolute paths and paths
+  containing `..` are rejected.
+- [ ] A corrupted image is reported as skipped but does not abort the scan.
+- [ ] A second identical scan reports `0 new` and creates no further records.
+- [ ] In SQLite, every group of similar images has exactly one representative
+  (`perceptual_duplicate_of IS NULL`), and the rest point to its hash.
+- [ ] Temporarily change `phash_threshold`, run `scan --regroup-only` and check
+  that only the groups change, not descriptions or vectors.
+- [ ] Delete the primary identical copy and scan: another existing copy becomes
+  primary, and the hash, descriptions and embedding remain. `--path` also
+  accepts a non-primary copy. After replacing a file's contents, its
+  `meme_files` entry points to the new hash, and the old meme uses another copy.
+- [ ] Delete all copies of a test file and run a plain `scan`: paths, FTS and
+  vector disappear, but `memes` and `descriptions` remain. Another scan does not
+  restore the old paths, and `memes.path` is empty. `describe`, `embed`,
+  `search` and the GUI skip the archived record; after restoring an identical
+  file its description is reused and the embedding can be rebuilt. The
+  remaining group is grouped correctly.
+- [ ] With `--prune-missing`, also check a nonexistent path stored outside the
+  current `image_dir`; its description stays in the database.
 
-## Opisy VLM
+## VLM descriptions
 
 ```sh
 uv run memy describe --config config.test.toml --limit 10 -v
 ```
 
-1. [ ] `describe --shuffle --limit 1` losuje z całej kwalifikującej się kolejki
-   przed limitem. Zapisane opisy, nieponawiane błędy, brakujące pliki i duplikaty
-   są nadal pomijane według istniejących zasad. Bez flagi pozostaje kolejność
-   po hashu. `--undescribed-first --shuffle` losuje osobno w obu grupach,
-   zachowując pierwszeństwo memów bez udanego opisu. `--path ... --shuffle`
-   losuje podane pliki. Flaga działa też w `all` i `describe embed`.
+1. [ ] `describe --shuffle --limit 1` picks randomly from the whole eligible
+   queue before applying the limit. Saved descriptions, non-retried failures,
+   missing files and duplicates are still skipped by the existing rules. Without
+   the flag the order stays by hash. `--undescribed-first --shuffle` shuffles
+   each group separately, keeping memes without a successful description first.
+   `--path ... --shuffle` shuffles the given files. The flag also works in `all`
+   and `describe embed`.
 
-- [ ] Opis powstaje tylko dla reprezentantów grup podobnych obrazów.
-- [ ] Każdy zapisany JSON ma wszystkie pola ze `description_schema.json`, a
-  `keywords` i `humor_type` spełniają limity oraz enum ze schematu.
-- [ ] `transcription` zgadza się z tekstem na obrazku, a `the_clue` wyjaśnia
-  konkretny żart, nie ogólnik typu „śmieszny obrazek”.
-- [ ] Drugi bieg z tą samą konfiguracją nie wysyła ponownie opisanych memów.
-- [ ] `--path plik.jpg -v` świadomie zastępuje tylko opis wybranego pliku dla
-  aktywnego `(model, prompt_version, effort_level)`.
-- [ ] Zmiana `prompt_version`, modelu lub effortu tworzy wariant opisu obok
-  starego, zamiast go kasować.
-- [ ] Błąd modelu lub pojedynczego pliku zapisuje `failed_describe` i nie
-  zatrzymuje pozostałej kolejki; `--retry-failed` podejmuje go ponownie.
-- [ ] Dla backendu `claude-code-cli` sprawdź osobno, że wynik trafia do
-  `structured_output`, a trafienie w limit użycia nie jest zapisane jako
+- [ ] Descriptions are created only for representatives of similar-image groups.
+- [ ] Every saved JSON has all fields from `description_schema.json`, and
+  `keywords` and `humor_type` respect the limits and enum from the schema.
+- [ ] `transcription` matches the text in the image, and `the_clue` explains the
+  specific joke rather than a generic "funny picture".
+- [ ] A second run with the same configuration does not resend described memes.
+- [ ] `--path file.jpg -v` deliberately replaces only the selected file's
+  description for the active `(model, prompt_version, effort_level)`.
+- [ ] Changing `prompt_version`, model or effort creates a description variant
+  next to the old one instead of deleting it.
+- [ ] A model error or a single bad file records `failed_describe` and does not
+  stop the rest of the queue; `--retry-failed` picks it up again.
+- [ ] For the `claude-code-cli` backend, check separately that the result comes
+  from `structured_output`, and that hitting the usage limit is not recorded as
   `failed_describe`.
 
-## Embedding i indeksy
+## Embedding and indexes
 
 ```sh
 uv run memy embed --config config.test.toml
 ```
 
-- [ ] Każdy opisany reprezentant dostaje wpis w `index_entries` (z wierszem
-  `entries_fts` o tym samym rowid) dla opisu wybranego według kolejności
-  awaryjnej, oraz wektor w `embeddings` od każdego modelu z `[embed]` i
+- [ ] Every described representative gets an entry in `index_entries` (with an
+  `entries_fts` row with the same rowid) for the description chosen by the
+  fallback order, and a vector in `embeddings` from every model in `[embed]` and
   `[[embed.extra]]`.
-- [ ] `embed --all-variants` dodaje wpisy dla pozostałych opisów; istniejące
-  wpisy i wektory zostają bez zmian.
-- [ ] Ponowne opisanie mema (`describe --path`) daje nowy `descriptions.id`;
-  stary wpis znika z wyszukiwania, a następny embed go zastępuje.
-- [ ] `search --exact` z innym wariantem (`--desc-model/--prompt/--effort`)
-  zwraca tylko memy z tym wariantem; `--embed-model` używa wektorów innego
-  modelu.
-- [ ] W FTS znajdują się transkrypcja, tagi i typ humoru; w tekście embeddingu
-  są scena oraz `the_clue`.
-- [ ] Drugi bieg nie wywołuje endpointu embeddingów dla już osadzonych memów.
-- [ ] Tymczasowo zatrzymaj endpoint embeddingów: błędny mem jest pomijany, a
-  po przywróceniu endpointu następny bieg go uzupełnia.
-- [ ] Po ręcznym usunięciu wierszy `index_entries` ponowny embed buduje FTS i
-  wektory od nowa (trigger usuwa wiersze FTS, kaskada usuwa wektory).
+- [ ] `embed --all-variants` adds entries for the remaining descriptions;
+  existing entries and vectors stay unchanged.
+- [ ] Re-describing a meme (`describe --path`) produces a new `descriptions.id`;
+  the old entry drops out of search, and the next embed replaces it.
+- [ ] `search --exact` with another variant (`--desc-model/--prompt/--effort`)
+  returns only memes with that variant; `--embed-model` uses another model's
+  vectors.
+- [ ] FTS contains the transcription, tags and humor type; the embedding text
+  contains the scene and `the_clue`.
+- [ ] A second run does not call the embeddings endpoint for already embedded
+  memes.
+- [ ] Temporarily stop the embeddings endpoint: the failing meme is skipped, and
+  after the endpoint is back the next run fills it in.
+- [ ] After manually deleting `index_entries` rows, another embed rebuilds FTS
+  and vectors from scratch (a trigger deletes FTS rows, a cascade deletes
+  vectors).
 
-## Wyszukiwanie CLI
+## CLI search
 
 ```sh
-uv run memy search --config config.test.toml "opis albo cytat" -n 10
+uv run memy search --config config.test.toml "description or quote" -n 10
 ```
 
-- [ ] Zapytanie po polsku znajduje angielski mem o tym samym znaczeniu i
-  odwrotnie.
-- [ ] Dokładny cytat lub nietypowe imię zwraca właściwy mem dzięki FTS.
-- [ ] Opis sytuacji/joke mechanic (`the_clue`), bez słów widocznych na obrazku,
-  zwraca sensowny wynik dzięki wektorom.
-- [ ] Wyniki nie zawierają nie-reprezentantów z grup podobnych obrazów.
-- [ ] Każda wypisana ścieżka istnieje i otwiera właściwy plik. `--show` nie
-  zmienia kolejności ani zestawu wyników.
+- [ ] A Polish query finds an English meme with the same meaning and vice versa.
+- [ ] An exact quote or an unusual name returns the right meme thanks to FTS.
+- [ ] A description of the situation or joke mechanic (`the_clue`), without words
+  visible in the image, returns a sensible result thanks to vectors.
+- [ ] Results contain no non-representatives of similar-image groups.
+- [ ] Every printed path exists and opens the right file. `--show` does not
+  change the order or set of results.
 
 ## GUI
 
@@ -138,437 +139,450 @@ uv run memy search --config config.test.toml "opis albo cytat" -n 10
 uv run memy gui --config config.test.toml
 ```
 
-1. [ ] W „Liście” kliknij „Embeduj opisane”. Przycisk działa na całej kolekcji,
-   niezależnie od promptu, modelu, filtra i checkboxów. Pomija istniejące
-   wektory i duplikaty niebędące reprezentantami. Dla każdego mema wybiera
-   najnowszy udany opis ze wszystkich konfiguracji. Po ukończeniu tabela pokazuje nowe „w indeksie”,
-   a wyszukiwanie uwzględnia nowe memy bez restartu.
-2. [ ] Podczas embedowania widać postęp i liczbę błędów; można przeglądać
-   kolekcję i przełączać tryby. Kolejny bieg i usuwanie są zablokowane.
-   Błąd endpointu nie zatrzymuje pozostałych memów. Ponowne kliknięcie podejmuje
-   tylko brakujące wektory; pusta kolejka i błąd uruchomienia mają jasny komunikat.
+1. [ ] In List, click Embed described. The button works on the whole
+   collection, regardless of prompt, model, filter and checkboxes. It skips
+   existing vectors and non-representative duplicates. For each meme it picks
+   the newest successful description across all configurations. On completion
+   the table shows the new "indexed" state, and search includes the new memes
+   without a restart.
+2. [ ] During embedding, progress and the error count are visible; the
+   collection can be browsed and modes switched. Another run and deletion are
+   blocked. An endpoint error does not stop the remaining memes. Clicking again
+   picks up only missing vectors; an empty queue and a start error have a clear
+   message.
 
-- [ ] Na górze, po prawej od pola wyszukiwania, jest przełącznik „Szukaj / Lista”.
-  „Lista” pokazuje tabelę po lewej i wspólny podgląd po prawej. Wpisany tekst
-  filtruje nazwy i ścieżki bez wywoływania modelu. Powrót do każdego trybu
-  zachowuje jego zapytanie, podgląd, zaznaczenie i przewinięcie obu paneli.
-- [ ] Między polem wyszukiwania a przełącznikiem jest suwak „FTS / Embeddingi”.
-  Domyślne 50% zachowuje dotychczasowe sortowanie. Skrajnie w lewo: tylko FTS
-  (działa też bez endpointu embeddingów), skrajnie w prawo: tylko embeddingi.
-  Zmiana odświeża wyniki po krótkim opóźnieniu. Suwak znika w „Liście”, a jego
-  pozycja i kolejność kontrolek przetrwają wielokrotne przełączanie trybów.
-- [ ] Tabela zawiera nazwę, folder, liczbę identycznych kopii (wraz z bieżącym
-  plikiem) i stan opisu dla aktywnej konfiguracji; obecność wektora jest osobna.
-  Kliknięcie wiersza zmienia podgląd, checkbox tylko zaznaczenie pliku.
-- [ ] Sprawdź wszystkie pięć filtrów. „Nieopisane” obejmuje brak próby dla
-  aktywnej konfiguracji, „Błędy” jej nieudaną próbę, także jeśli inny wariant
-  ma poprawny opis. „Duplikaty” zawiera rozwijane grupy co najmniej dwóch
-  dostępnych plików, w tym grupy wyłącznie identycznych kopii. Liczebność grupy
-  dotyczy wszystkich dostępnych plików, nawet po filtrowaniu ścieżki.
-- [ ] Filtr, rozwinięte grupy i checkboxy przetrwają przejście do „Szukaj”
-  i powrót. Brak dopasowań daje komunikat i usuwa niepasujący podgląd.
-- [ ] Bez działającego Ollama lista, filtry i podgląd nadal działają.
-- [ ] Po zmianach kolekcji przez CLI uruchom GUI ponownie, by odczytać nowe dane.
-- [ ] Wpisanie zapytania uruchamia wyszukiwanie po krótkiej pauzie, a Enter
-  wykonuje je od razu.
-- [ ] Kliknięcie oraz strzałki zmieniają zaznaczenie, podgląd obrazu i opis
-  tego samego wyniku.
-- [ ] Page Down przełącza podgląd o 10 wyników dalej, a Page Up o 10 wstecz,
-  także przy fokusie w polu zapytania. Lista przewija się do wybranego wyniku;
-  skoki zatrzymują się na pierwszym i ostatnim wyniku.
-- [ ] Jeśli mem ma wiele wariantów opisu, Tab oraz lista wariantów przełączają
-  opis bez zmiany obrazu. Rozwinięta lista pozostaje otwarta przez kilka sekund
-  bez klikania; można przesunąć mysz do innej pozycji i wybrać ją. Fokus wraca
-  do zapytania dopiero po wyborze.
-- [ ] Podmień zawartość pliku pod tą samą ścieżką bez skanowania. Wynik ze
-  starym hashem nie może pojawić się na liście; status powinien zgłosić liczbę
-  ukrytych nieaktualnych rekordów.
-- [ ] Sprawdź podstawowe akcje: kopiowanie obrazka/ścieżki, otwieranie w
-  przeglądarce, czyszczenie Esc oraz zmianę liczby wyników.
-- [ ] Po błędzie wczytania, kopiowania lub otwierania jednego mema przejście
-  do innego usuwa poprzedni komunikat. Jeśli kolejny mem też powoduje błąd,
-  pasek statusu pokazuje nowy komunikat.
-- [ ] Pasek statusu z „F1: skróty” jest widoczny bez przewijania, także przy
-  długim opisie, wielu wynikach, długim komunikacie statusu, zmianie rozmiaru
-  okna i podglądzie na całą szerokość. Przewijają się tylko panele zawartości.
+- [ ] At the top there is a Search / List / Compare switch. List shows a table
+  on the left and the shared preview on the right. Typed text filters names and
+  paths without calling a model. Returning to each mode preserves its query,
+  preview, selection and the scroll position of both panes.
+- [ ] Next to the search field there is an FTS/embedding slider (`50% emb.`).
+  The default 50% keeps the existing ranking. Fully left: FTS only (also works
+  without the embeddings endpoint); fully right: embeddings only. A change
+  refreshes the results after a short delay. The slider is hidden in List, and
+  its position and the control order survive repeated mode switches.
+- [ ] The table contains the name, folder, number of identical copies (including
+  the current file) and description state for the active configuration; vector
+  presence is shown separately. Clicking a row changes the preview, a checkbox
+  only the file's selection.
+- [ ] Check all five filters. Undescribed covers no attempt for the active
+  configuration, Errors a failed attempt, even when another variant has a valid
+  description. Duplicates contains expandable groups of at least two available
+  files, including groups of only identical copies. Group size counts all
+  available files, even after path filtering.
+- [ ] The filter, expanded groups and checkboxes survive switching to Search and
+  back. No matches gives a message and clears a non-matching preview.
+- [ ] Without a running Ollama, the list, filters and preview still work.
+- [ ] After collection changes made through the CLI, restart the GUI to read the
+  new data.
+- [ ] Typing a query runs the search after a short pause, and Enter runs it
+  immediately.
+- [ ] Clicking and arrow keys change the selection, image preview and
+  description of the same result.
+- [ ] Page Down moves the preview 10 results forward and Page Up 10 back, also
+  with focus in the query field. The list scrolls to the selected result; jumps
+  stop at the first and last result.
+- [ ] If a meme has several description variants, Tab and the variant list
+  switch the description without changing the image. An expanded list stays
+  open for a few seconds without clicking; the mouse can be moved to another
+  entry to pick it. Focus returns to the query only after a choice.
+- [ ] Replace a file's contents under the same path without scanning. A result
+  with the old hash must not appear in the list; the status should report the
+  number of hidden outdated records.
+- [ ] Check the basic actions: copying the image/path, opening in a viewer,
+  clearing with Esc and changing the number of results.
+- [ ] After a load, copy or open error on one meme, moving to another clears the
+  previous message. If the next meme also fails, the status bar shows the new
+  message.
+- [ ] The status bar with "F1: shortcuts" is visible without scrolling, also with
+  a long description, many results, a long status message, a window resize and
+  full-width preview. Only the content panes scroll.
 
-1. [ ] W „Szukaj” i „Liście” przeciągnij pionową granicę między listą
-   a podglądem w obie strony, także poza okno. Oba panele zachowują minimalną
-   szerokość, obraz dopasowuje rozmiar, a opis zawija się bez restartu.
-2. [ ] Ustaw różne szerokości w obu trybach i przełącz je kilkukrotnie.
-   Każdy przywraca swoją szerokość, także po otwarciu i zamknięciu duplikatów
-   lub identycznych kopii. F11 ukrywa listę i separator; ponowne F11 przywraca
-   poprzedni podział, również w otwartej grupie.
-3. [ ] Zmniejsz i powiększ okno po rozsunięciu paneli. Podgląd i stopka
-   pozostają w oknie, a po powiększeniu wraca wybrana szerokość listy.
+1. [ ] In Search and List, drag the vertical divider between the list and the
+   preview both ways, also beyond the window. Both panes keep a minimum width,
+   the image resizes and the description rewraps without a restart.
+2. [ ] Set different widths in both modes and switch several times. Each mode
+   restores its width, also after opening and closing duplicates or identical
+   copies. F11 hides the list and divider; F11 again restores the previous
+   split, also inside an open group.
+3. [ ] Shrink and enlarge the window after widening the panes. The preview and
+   footer stay inside the window, and enlarging restores the chosen list width.
 
-Weryfikacja 2026-10-26: `/tmp/check_memy_splitter.py` przeszedł próbę
-z rzeczywistym renderowaniem Dear PyGui i symulowanymi zdarzeniami przeciągania
-na tymczasowej bazie i obrazie. Sprawdzono oba tryby, osobne szerokości,
-minimalne rozmiary, skalowanie obrazu, opisy, oba widoki duplikatów, F11
-oraz zmniejszenie i przywrócenie okna. Formatowanie i lint przeszły.
+Verified 2026-10-26: a script passed with real Dear PyGui rendering and
+simulated drag events on a temporary database and image. Checked both modes,
+separate widths, minimum sizes, image scaling, descriptions, both duplicate
+views, F11, and shrinking and restoring the window. Formatting and lint passed.
 
-### Porównywanie opisów
+### Comparing descriptions
 
-1. [ ] „Porównanie” jest osobnym widokiem obok „Szukaj” i „Lista”. Można
-   wejść bez wybranego mema, z jednym opisem lub bez opisów, również przy
-   pustej kolekcji. „Porównaj opisy” otwiera porównanie z bieżącego podglądu.
-   W każdej kolumnie są niezależne filtry modelu, promptu i rozumowania.
-2. [ ] Scena leży obok sceny również przy innej kolejności pól w JSON-ie.
-   Różne długości tekstu nie przesuwają kolejnych pól między kolumnami;
-   brak pola jest zaznaczony. Obie kolumny przewijają się razem, a opisy
-   zawijają się po zmianie rozmiaru okna. Stopka pozostaje widoczna.
-3. [ ] Zmiana wariantu dotyczy wyłącznie wybranej kolumny. Para przetrwa
-   przejścia między memami oraz zamknięcie i ponowne otwarcie porównania.
-   Mem bez wybranego wariantu pokazuje komunikat, bez automatycznej podmiany;
-   mem bez żadnego udanego opisu nie pojawia się w sekwencji porównania.
-4. [ ] Poprzedni/następny mem oraz strzałki przechodzą po wynikach „Szukaj”,
-   przefiltrowanej „Liście” albo otwartej grupie duplikatów, zależnie od miejsca
-   wejścia. Na końcach sekwencji przyciski są wyłączone. Rozwinięty wybór
-   wariantu pozostaje otwarty i nie przełącza mema podczas wyboru.
-5. [ ] Kliknięcie miniatury powiększa obraz. Esc najpierw zamyka powiększenie,
-   a następnie porównanie. „Wróć” przywraca oryginalny mem, wariant opisu,
-   zapytanie, zaznaczenie, przewinięcie i stan F11 lub otwartej grupy.
-6. [ ] Niedostępny, podmieniony lub uszkodzony plik przy przejściu do kolejnego
-   mema daje komunikat i zachowuje bieżący obraz i opisy. Wielokrotne zmiany
-   memów, powiększanie i wychodzenie nie zostawiają starych obrazów.
-7. [ ] Każdy filtr ma opcję „Dowolny”. Wartości obejmują wszystkie udane opisy
-   w bazie; nieudane próby nie dodają wariantów. „Brak ustawienia” wybiera NULL
-   effort, a `none` tylko jawne `none`. Ustaw prompt w jednej kolumnie, a w drugiej
-   „Dowolny”; obie kolumny zachowują własne ograniczenia i wybrany wariant.
-8. [ ] Przy kilku pasujących konfiguracjach lista wariantów jest widoczna
-   pod filtrami. Przy jednej wybór jest automatyczny, a lista znika. Kombinacja
-   parametrów bez dopasowań pokazuje komunikat. Filtry i ostatni mem przetrwają
-   przełączenie do innego widoku i powrót do „Porównania”.
-9. [ ] Filtry parametrów ograniczają bieżącą sekwencję do memów z co najmniej
-   jednym pasującym udanym opisem po każdej stronie. „Dowolny” dopuszcza każdy
-   wariant, ale nadal wymaga opisu. Nieudana próba nie spełnia warunku.
-   Parametry jednej strony muszą pasować do tego samego opisu.
-10. [ ] Zawężenie zachowuje bieżący mem, jeśli nadal pasuje; w przeciwnym razie
-    wybiera pierwszy pasujący. Licznik i przyciski od razu uwzględniają wynik.
-    Zero dopasowań usuwa poprzedni obraz i opisy, pozostawiając filtry oraz
-    komunikat. Poluzowanie przywraca ukryte memy we wcześniejszej kolejności,
-    również po przełączeniu widoków przy pustym wyniku. Porównanie nie dodaje
-    memów spoza źródłowych wyników/listy/grupy ani nie zmienia listy źródłowej.
-11. [ ] „Kopiuj porównanie” kopiuje sam JSON z kluczami `meme`, `left` i `right`.
-    Mem ma ścieżkę względną, SHA-256 i wymiary, a każda strona faktycznie wybrany
-    model, prompt, effort oraz pełny opis, także puste pola i listy. Polskie znaki,
-    nowe linie i cudzysłowy są zachowane. Brak jednej strony lub pusty wynik
-    wyłącza przycisk; wybór dostępnego wariantu przywraca możliwość kopiowania.
-12. [ ] „Kopiuj wszystkie pary” kopiuje `{"comparisons": [...]}` w kolejności
-    bieżącej listy, z dokładnie dwoma wariantami wybranymi poniżej filtrów.
-    Przy „Dowolny” eksport nie podmienia wariantu na inny dostępny dla mema.
-    Mem z tylko jednym wybranym wariantem, nieudaną próbą lub niedostępnym albo
-    podmienionym plikiem jest pomijany. Status podaje liczbę par i pominięć.
-13. [ ] Eksport wielu par zachowuje bieżący obraz, zaznaczenie i filtry.
-    Działa również, gdy bieżący mem nie ma wybranego wariantu, ale inne memy
-    mają całą parę. Pusty wynik eksportu zachowuje poprzedni schowek.
-14. [ ] Brak wybranego wariantu pokazuje „Opisz i embeduj ten mem” przy właściwej
-    stronie. Opisywany jest tylko bieżący hash z dokładnym modelem, promptem
-    i effortem z dolnej listy, także przy „Dowolny”. „Brak ustawienia” usuwa
-    effort z aktywnej konfiguracji; `none` pozostaje osobną wartością.
-15. [ ] Zapisany opis pojawia się od razu, jeszcze podczas embedowania, bez zmiany
-    wariantów, mema, obrazu i przewinięcia pól. Podczas pracy można nawigować
-    i zmieniać widoki. Ukończenie zadania nie przywraca poprzedniego mema.
-    Ponowne dodanie tego samego hasha i wariantu, embedowanie całej kolekcji
-    i usuwanie są blokowane do zakończenia kolejki.
-16. [ ] Embedding powstaje z nowego wariantu, także dla niereprezentanta grupy
-    i fizycznej kopii. Istniejący wektor oraz FTS tego hasha są zastępowane
-    razem. Pozostałe memy i opisy pozostają bez zmian. Błąd embedowania daje
-    mały komunikat przy stronie, zachowuje opis i poprzednie indeksy oraz
-    nie uruchamia kolejnej próby. Błąd opisu nie uruchamia embedowania;
-    podmieniony lub niezindeksowany plik nie trafia do modelu.
-17. [ ] Podczas pracy „Dodaj do kolejki” przyjmuje kolejne memy i różne warianty
-    tego samego mema. Każde zadanie zachowuje własny model, prompt, effort,
-    backend oraz ustawienia embeddingu z chwili kliknięcia. Późniejsze zmiany
-    filtrów i konfiguracji ich nie podmieniają. Kolejność jest zgodna z kliknięciami,
-    zadania nie wykonują się równolegle, a fizyczne kopie nie dublują zadania
-    tego samego wariantu. Widać licznik oczekujących i pozycję wariantu.
-18. [ ] Błąd opisu, embeddingu lub pliku nie zatrzymuje następnego zadania.
-    Embedding po błędzie nadal nie jest ponawiany. Kolejka działa po zmianie
-    widoku; po jej opróżnieniu przywraca dostępność embedowania kolekcji
-    i dodawania zadań oraz ukrywa licznik. Odświeżenie nie zmienia oglądanego mema.
+1. [ ] Compare is a separate view next to Search and List. It can be entered
+   without a selected meme, with one description or with none, also with an
+   empty collection. Compare descriptions opens the comparison from the current
+   preview. Each column has independent model, prompt and reasoning filters.
+2. [ ] Scene sits next to scene even when the JSON field order differs.
+   Different text lengths do not shift later fields between columns; a missing
+   field is marked. Both columns scroll together, and descriptions rewrap after
+   a window resize. The footer stays visible.
+3. [ ] Changing the variant affects only the selected column. The pair survives
+   moving between memes and closing and reopening the comparison. A meme without
+   the selected variant shows a message, with no automatic substitution; a meme
+   without any successful description does not appear in the comparison
+   sequence.
+4. [ ] Previous/next meme and the arrow keys move through Search results, the
+   filtered List or an open duplicate group, depending on where comparison was
+   entered. At the ends of the sequence the buttons are disabled. An expanded
+   variant choice stays open and does not switch memes while choosing.
+5. [ ] Clicking the thumbnail enlarges the image. Esc first closes the
+   enlargement, then the comparison. Back restores the original meme,
+   description variant, query, selection, scroll and the F11 or open-group
+   state.
+6. [ ] An unavailable, replaced or corrupted file when moving to the next meme
+   gives a message and keeps the current image and descriptions. Repeated meme
+   changes, enlarging and leaving leave no stale images behind.
+7. [ ] Every filter has an Any option. Values cover all successful descriptions
+   in the database; failed attempts add no variants. Not set selects a NULL
+   effort, and `none` only an explicit `none`. Set a prompt in one column and Any
+   in the other; both columns keep their own constraints and selected variant.
+8. [ ] With several matching configurations, the variant list is visible below
+   the filters. With one, the choice is automatic and the list disappears. A
+   parameter combination without matches shows a message. Filters and the last
+   meme survive switching to another view and back to Compare.
+9. [ ] Parameter filters restrict the current sequence to memes with at least one
+   matching successful description on each side. Any allows every variant but
+   still requires a description. A failed attempt does not qualify. One side's
+   parameters must match the same description.
+10. [ ] Narrowing keeps the current meme if it still matches; otherwise it
+    selects the first match. The counter and buttons reflect the result at once.
+    Zero matches clears the previous image and descriptions, leaving the filters
+    and a message. Loosening restores hidden memes in their earlier order, also
+    after switching views with an empty result. Comparison does not add memes
+    from outside the source results/list/group or change the source list.
+11. [ ] Copy comparison copies just the JSON with keys `meme`, `left` and
+    `right`. The meme has its relative path, SHA-256 and dimensions, and each
+    side the actually selected model, prompt, effort and full description,
+    including empty fields and lists. Polish characters, newlines and quotes are
+    preserved. A missing side or empty result disables the button; choosing an
+    available variant enables copying again.
+12. [ ] Copy all pairs copies `{"comparisons": [...]}` in the current list's
+    order, with exactly the two variants selected below the filters. With Any,
+    the export does not substitute another variant available for the meme. A
+    meme with only one selected variant, a failed attempt, or an unavailable or
+    replaced file is skipped. The status gives the number of pairs and skips.
+13. [ ] Exporting many pairs keeps the current image, selection and filters. It
+    also works when the current meme lacks a selected variant but other memes
+    have the full pair. An empty export result keeps the previous clipboard.
+14. [ ] A missing selected variant shows Describe and embed this meme on the
+    right side. Only the current hash is described, with the exact model, prompt
+    and effort from the lower list, also with Any. Not set removes effort from
+    the active configuration; `none` stays a separate value.
+15. [ ] The saved description appears immediately, still during embedding,
+    without changing variants, meme, image or field scroll. Navigation and view
+    changes work while it runs. Finishing the task does not bring back the
+    previous meme. Re-adding the same hash and variant, embedding the whole
+    collection and deletion are blocked until the queue finishes.
+16. [ ] The embedding is built from the new variant, also for a group
+    non-representative and a physical copy. The existing vector and FTS of that
+    hash are replaced together. Other memes and descriptions stay unchanged. An
+    embedding error gives a small message by the side, keeps the description and
+    previous indexes and starts no further attempt. A description error does not
+    start embedding; a replaced or unindexed file is not sent to the model.
+17. [ ] While running, Add to queue accepts further memes and different variants
+    of the same meme. Each task keeps its own model, prompt, effort, backend and
+    embedding settings from the moment of the click. Later filter and
+    configuration changes do not replace them. Order follows the clicks, tasks
+    do not run in parallel, and physical copies do not duplicate a task for the
+    same variant. The waiting count and the variant's position are visible.
+18. [ ] A description, embedding or file error does not stop the next task.
+    Embedding after an error is still not retried. The queue keeps working after
+    a view change; once empty it re-enables collection embedding and adding
+    tasks and hides the counter. Refreshing does not change the viewed meme.
 
-Weryfikacja 2026-10-26: `/tmp/check_memy_comparison.py` przeszedł test
-z rzeczywistym oknem Dear PyGui, tymczasową bazą i obrazami. Sprawdzono
-wyrównanie pól w różnej kolejności, wspólne przewijanie, nawigację po wynikach,
-przefiltrowanej liście i grupie, zachowanie pary, brak jednego lub obu wariantów,
-powiększenie obrazu, Esc, przywracanie stanu, zwężanie okna i błąd wczytania.
-Ponownie przeszły próby separatora paneli i embedowania w tle.
-Zrzut widoku zapisano jako `/tmp/memy-comparison-preview.png`. Po dodaniu
-osobnego widoku sprawdzono również wejście bez zaznaczenia, wznowienie,
-niezależne filtry, „Dowolny”, rozróżnienie NULL/none, zero/jeden/wiele
-dopasowań oraz pustą kolekcję.
+Verified 2026-10-26: a script passed with a real Dear PyGui window, a temporary
+database and images. Checked field alignment in different orders, shared
+scrolling, navigation through results, the filtered list and a group, pair
+preservation, one or both variants missing, image enlargement, Esc, state
+restoration, narrowing the window and a load error. The pane divider and
+background embedding checks passed again. After adding the separate view, also
+checked entering without a selection, resuming, independent filters, Any, the
+NULL/none distinction, zero/one/many matches and an empty collection.
 
-Weryfikacja filtrowania 2026-10-26: `/tmp/check_memy_comparison_filters.py`
-sprawdził w renderowanym GUI przecięcie obu filtrów, „Dowolny”, NULL/none,
-nieudane opisy, parametry z jednego opisu, fizyczne kopie, kolejność,
-nawigację, pusty wynik i wznowienie, przywracanie ukrytych memów oraz
-zachowanie źródłowej listy. Baza pozostała bez zmian. Test separatora
-paneli również przeszedł.
+Filter verification 2026-10-26: a script checked in the rendered GUI the
+intersection of both filters, Any, NULL/none, failed descriptions, parameters
+from one description, physical copies, order, navigation, an empty result and
+resuming, restoring hidden memes and preserving the source list. The database
+stayed unchanged. The pane divider check also passed.
 
-Weryfikacja kopiowania 2026-10-26: test renderowanego GUI przechwycił zapis
-do schowka i sprawdził poprawny JSON, parametry faktycznie wybranych wariantów,
-pełne opisy z polskimi znakami, pustymi polami i listami oraz blokadę przy braku
-wariantu lub pustym wyniku. Zawartość schowka pulpitu pozostała niezmieniona.
+Copy verification 2026-10-26: a rendered GUI test intercepted the clipboard
+write and checked valid JSON, the parameters of the actually selected variants,
+full descriptions with Polish characters, empty fields and lists, and blocking
+when a variant is missing or the result is empty. The desktop clipboard stayed
+unchanged.
 
-Weryfikacja eksportu wielu par 2026-10-26: test sprawdził zgodność pojedynczej
-pary z eksportem zbiorczym, dokładne warianty mimo „Dowolny”, kolejność i zakres
-listy, fizyczne kopie, pomijanie niepełnych par i podmienionych plików,
-zachowanie bieżącego podglądu oraz brak nadpisania schowka przy pustym eksporcie.
+Multi-pair export verification 2026-10-26: a test checked that a single pair
+matches the bulk export, exact variants despite Any, list order and scope,
+physical copies, skipping incomplete pairs and replaced files, preserving the
+current preview, and not overwriting the clipboard on an empty export.
 
-Weryfikacja generowania wariantu 2026-10-26:
-`/tmp/check_memy_comparison_generation.py` przeszedł test renderowanego GUI,
-tymczasowej bazy i symulowanych usług. Sprawdzono dokładny model/prompt,
-NULL/none, fizyczną kopię niereprezentanta, pojawienie się opisu przed
-zakończeniem embedowania, nawigację i zmianę widoku w trakcie pracy,
-blokadę równoległych zadań i usuwania, zastąpienie indeksów oraz ich zachowanie
-przy błędzie żądania i rollbacku zapisu. Nieudany embedding miał jedną próbę,
-a błąd opisu i podmieniony plik nie uruchomiły embedowania. Konfiguracja
-pozostała bez zmian. Przeszły też dotychczasowe testy filtrów, kopiowania
-porównań i embedowania kolekcji, formatowanie oraz lint.
+Variant generation verification 2026-10-26: a script passed with the rendered
+GUI, a temporary database and simulated services. Checked the exact
+model/prompt, NULL/none, a physical copy of a non-representative, the
+description appearing before embedding finishes, navigation and view changes
+during work, blocking parallel tasks and deletion, index replacement and
+preservation on a request error and write rollback. A failed embedding had one
+attempt, and a description error and a replaced file did not start embedding.
+The configuration stayed unchanged. Earlier filter, comparison copy and
+collection embedding tests, formatting and lint also passed.
 
-Weryfikacja kolejki: `/tmp/check_memy_comparison_queue.py` przeszedł test
-renderowanego GUI z tymczasową bazą i symulowanymi usługami. Kolejne zadania
-miały różne modele, prompty, effort (także NULL/none), backendy i ustawienia
-embeddingu. Sprawdzono zachowanie kopii zagnieżdżonej konfiguracji, kolejność
-kliknięć, brak równoległego przetwarzania, deduplikację między stronami
-i fizycznymi kopiami, różne warianty jednego mema, pozycje i licznik kolejki.
-Błędy opisu, embeddingu i podmienionego pliku przepuszczały następne zadanie;
-embedding miał jedną próbę. Oczekujące zadania dokończyły się również po
-przejściu do Listy. Podgląd i warianty pozostały bez zmian, a po opróżnieniu
-kolejki wróciła dostępność embedowania kolekcji. Przeszły też regresje
-generowania pojedynczego wariantu, filtrów, eksportu i embedowania kolekcji.
+Queue verification: a script passed with the rendered GUI, a temporary database
+and simulated services. Consecutive tasks had different models, prompts, effort
+(including NULL/none), backends and embedding settings. Checked that a nested
+configuration copy is preserved, click order, no parallel processing,
+deduplication across sides and physical copies, different variants of one meme,
+queue positions and counter. Description, embedding and replaced-file errors let
+the next task through; embedding had one attempt. Waiting tasks also finished
+after switching to List. The preview and variants stayed unchanged, and once the
+queue was empty collection embedding became available again. Regression checks
+of single-variant generation, filters, export and collection embedding passed.
 
-### Podgląd duplikatów i identycznych kopii — dostępne w GUI
+### Duplicate and identical-copy preview
 
-- [ ] Przyciski „Grupa duplikatów”, „Identyczne kopie” i „Wróć do wyniku”
-  widać tylko, gdy grupa zawiera więcej niż jeden dostępny plik (podobny mem
-  lub identyczną kopię). Dla pojedynczego mema i grupy z samymi nieaktualnymi
-  dodatkowymi ścieżkami cały zestaw przycisków jest ukryty.
-- [ ] Pod obrazem w wynikach i widokach duplikatów widać ścieżkę względem
-  `image_dir`, także dla plików w podkatalogach. Plik poza `image_dir` ma
-  czytelną ścieżkę względną z `..`.
-- [ ] Z wybranego mema można otworzyć jego grupę, podejrzeć każdego członka
-  i rozpoznać reprezentanta. Mem bez duplikatów ma jasny komunikat.
-- [ ] Widoki grup obejmują także nie-reprezentantów oraz memy bez opisów
-  i embeddingów; normalne wyszukiwanie nadal pokazuje tylko reprezentantów.
-- [ ] „Identyczne kopie” pokazuje wszystkie dostępne zeskanowane ścieżki
-  o tym samym hashu, także kopie niebędące główną. Mają wspólne warianty opisów.
-- [ ] Po kliknięciu ścieżki podgląd, kopiowanie i otwieranie dotyczą tej kopii.
-  Lista grupy/kopii jest w głównym oknie. „Wróć” przywraca podgląd, z którego
-  otwarto grupę, także w „Liście”; Esc zamyka listę. Przełączenie trybu
-  zachowuje otwartą grupę lub listę identycznych kopii.
-- [ ] Nieaktualne ścieżki są ukrywane z komunikatem o ich liczbie. Baza bez
-  `meme_files` nadal pozwala przeglądać znane grupy podobnych obrazów.
+- [ ] The Duplicate group, Identical copies and Back to result buttons are
+  visible only when the group contains more than one available file (a similar
+  meme or an identical copy). For a single meme and for a group with only
+  outdated extra paths, the whole set of buttons is hidden.
+- [ ] Below the image in results and duplicate views, the path relative to
+  `image_dir` is shown, also for files in subdirectories. A file outside
+  `image_dir` has a readable relative path with `..`.
+- [ ] From a selected meme its group can be opened, each member previewed and the
+  representative recognized. A meme without duplicates has a clear message.
+- [ ] Group views also include non-representatives and memes without
+  descriptions and embeddings; normal search still shows only representatives.
+- [ ] Identical copies shows all available scanned paths with the same hash,
+  including non-primary copies. They share description variants.
+- [ ] After clicking a path, preview, copy and open apply to that copy. The
+  group/copy list is in the main window. Back restores the preview from which
+  the group was opened, also in List; Esc closes the list. Switching modes keeps
+  the open group or identical-copy list.
+- [ ] Outdated paths are hidden with a message giving their count. A database
+  without `meme_files` still allows browsing known groups of similar images.
 
-### Pozostałe rozszerzenie GUI — po implementacji
+### Deleting files
 
-Usuwanie, przenoszenie, zmiana nazw i indeksowanie z GUI są odłożone.
-Checkboxy obecnie tylko przechowują zaznaczenie.
-Usuwanie sprawdzaj wyłącznie na kopii kolekcji przygotowanej do weryfikacji.
+Moving, renaming and indexing from the GUI are deferred. Test deletion only on a
+copy of the collection prepared for verification.
 
-- [ ] W wynikach i grupach można wybrać jeden lub wiele memów do usunięcia.
-  Z dysku znikają wyłącznie wskazane pliki, a ich wpisy w `meme_files`
-  znikają z bazy. Rekord mema, opisy, FTS i wektor znikają dopiero po
-  usunięciu ostatniej identycznej kopii. Lista i podgląd odświeżają się po operacji.
-- [ ] Usunięcie reprezentanta pozostawia poprawne grupy z nowym reprezentantem;
-  opisy i embeddingi ocalałych memów nie są kasowane ani generowane od nowa.
-  Usunięcie całej grupy usuwa ją z widoku, a pozostawienie jednego członka
-  sprawia, że przestaje być pokazywana jako grupa duplikatów.
-- [ ] Przy błędzie usuwania pliku GUI wskazuje, którego pliku dotyczy błąd,
-  zachowuje jego rekordy i poprawnie pokazuje pozostałe udane usunięcia.
-- [ ] Grupy obejmują wszystkie zeskanowane identyczne kopie z `meme_files`,
-  także grupę złożoną wyłącznie z identycznych plików. Liczebność oznacza
-  liczbę fizycznych plików. Usunięcie jednej kopii zachowuje opisy i indeksy
-  wspólnego hasha, dopóki istnieje inna kopia.
+- [ ] In List and groups, one or several memes can be selected for deletion.
+  Only the selected files disappear from disk, and their `meme_files` entries
+  disappear from the database. The meme record, descriptions, FTS and vector
+  disappear only after the last identical copy is deleted. The list and preview
+  refresh after the operation.
+- [ ] Deleting a representative leaves correct groups with a new representative;
+  descriptions and embeddings of surviving memes are neither deleted nor
+  regenerated. Deleting a whole group removes it from the view, and leaving one
+  member makes it no longer shown as a duplicate group.
+- [ ] On a file deletion error, the GUI names the file concerned, keeps its
+  records and correctly shows the other successful deletions.
+- [ ] Groups include all scanned identical copies from `meme_files`, also a group
+  made only of identical files. Group size is the number of physical files.
+  Deleting one copy keeps the shared hash's descriptions and indexes while
+  another copy exists.
 
-## Pełny przebieg, osobne etapy i wznawianie
+## Full run, separate stages and resuming
 
 ```sh
 uv run memy all --config config.test.toml --limit 10
 ```
 
-- [ ] `all` wykonuje kolejno scan, describe i embed, a `scan`, `describe` i
-  `embed` osobno wykonują tylko własny etap.
-1. [ ] `scan embed --config config.test.toml --limit 1` wykonuje kolejno scan
-   i embed bez opisywania. Flagi po nazwach etapów są wspólne; `--limit`
-   ogranicza tylko embed. `describe embed` obsługuje wspólne `--model`
-   i `--limit` oraz flagi opisywania. `search "scan embed"` nadal jest zapytaniem.
-- [ ] `all` przyjmuje flagi etapów: `--regroup-only` i `--prune-missing` dla
-  skanowania, `--path` albo `--undescribed-only`, `--any-effort`, `--effort`
-  i `-v` dla opisywania, a `--model` i `--limit` dla opisywania oraz embeddingów.
-- [ ] Przerwij `describe` po ukończeniu jednego obrazu, uruchom `describe`
-  ponownie i sprawdź, że już zapisane opisy nie są robione od nowa. Powtórz
-  `embed` i sprawdź, że pomija istniejące embeddingi.
-- [ ] Na koniec wykonaj kilka zapisanych przykładowych zapytań z `AGENTS.md` i
-  oceń wyniki ręcznie, zanim uruchomisz indeksowanie całej kolekcji.
+- [ ] `all` runs scan, describe and embed in order, while `scan`, `describe` and
+  `embed` alone run only their own stage.
+1. [ ] `scan embed --config config.test.toml --limit 1` runs scan and then embed
+   without describing. Flags after the stage names are shared; `--limit` limits
+   only embed. `describe embed` accepts the shared `--model` and `--limit` and
+   the describe flags. `search "scan embed"` is still a query.
+- [ ] `all` accepts stage flags: `--regroup-only` and `--prune-missing` for
+  scanning, `--path` or `--undescribed-only`, `--any-effort`, `--effort` and
+  `-v` for describing, and `--model` and `--limit` for describing and embedding.
+- [ ] Interrupt `describe` after one image is finished, run `describe` again and
+  check that saved descriptions are not redone. Repeat `embed` and check that it
+  skips existing embeddings.
+- [ ] Finally run a few of the example queries from `AGENTS.md` and judge the
+  results manually before indexing the whole collection.
 
-## Weryfikacja implementacji Lista (2026-10-09)
+## List implementation verification (2026-10-09)
 
-Na tymczasowej kolekcji sprawdzono programowo wszystkie filtry, liczebności
-fizycznych kopii, brakujące/podmienione ścieżki i bazę bez `meme_files`.
-Test z rzeczywistym oknem Dear PyGui i renderowaniem klatek przeszedł tworzenie
-tabeli, callbacki podglądu i checkboxów, przełączanie trybów z osobnymi
-zapytaniami, powrót z identycznych kopii, pusty wynik oraz widoczność F1.
-Nie zastępuje to ręcznej oceny układu, klikania i przewijania dużej kolekcji.
+On a temporary collection, all filters, physical copy counts, missing/replaced
+paths and a database without `meme_files` were checked programmatically. A test
+with a real Dear PyGui window and frame rendering passed table creation, preview
+and checkbox callbacks, mode switching with separate queries, returning from
+identical copies, an empty result and F1 visibility. This does not replace
+manual review of layout, clicking and scrolling on a large collection.
 
-## Izolacja Claude i OpenCode
+## Claude and OpenCode isolation
 
-1. Claude: uruchom rzeczywiste CLI z lokalnym endpointem Anthropic i fikcyjnym
-   logowaniem. W żądaniu mają być obrazy base64 i wyłącznie `StructuredOutput`.
-   Nie może być Read, Bash, narzędzi sieciowych/MCP ani ścieżek źródłowych.
-   Sprawdź odczyt ostatniego JSONL `result`, `structured_output` i usage.
-2. OpenCode V2: lokalny provider OpenAI-compatible, izolowane dane testowe.
-   Żądanie ma zawierać `tools: []`, obrazy i schemat; instrukcje systemowe mają
-   zawierać dokładny prompt. `cwd` i `PWD` wskazują ten sam katalog tymczasowy.
-   Ustawienia repozytorium, globalne AGENTS.md, MCP, skills i zewnętrzne pluginy
-   nie mogą trafiać do żądania. CLI zachowuje własną obsługę logowania i sesji.
-   Sprawdź też, że OPENCODE_CONFIG_DIR i XDG_CONFIG_HOME są tymczasowe, a
-   OPENCODE_CONFIG oraz OPENCODE_CLI_CONFIG_CONTENT nie są dziedziczone.
-   Monitor inotify na prawdziwym ~/.config/opencode nie może zgłosić otwarć
-   ani odczytów podczas działania klienta i serwera.
-3. Sprawdź statyczny obraz, kolejność i timestampy klatek oraz pliki ze spacjami.
-   OpenCode skaluje tylko obrazy statyczne do 1440; Python przekazuje Claude
-   natywny PNG, ale jego CLI może dodatkowo zmniejszać obrazy.
-4. W testowej bazie sprawdź zapis/pominięcie opisu, osobny effort, błędny JSON
-   i retry. OpenCode: błąd procesu, limit konta, brak wyniku lub próba narzędzia
-   mają zatrzymać kolejkę bez rekordu. Timeout i błędny opis są per-image failures.
-   Claude: typowane limity nadal wywołują oczekiwanie bez zapisu błędu obrazu.
-5. OpenCode: poprawny pełny JSON przy exit 0 bez zdarzeń `step_finish` też jest
-   sukcesem (ścieżka catch-up V2). Usage pozostaje wtedy NULL; przy natywnych
-   tokenach zachowaj cały obiekt i licz tylko jawne `total`.
-6. Sprawdź sprzątanie plików po sukcesie/błędzie, timeout/Ctrl+C oraz brak
-   regresji Codexa po wydzieleniu wspólnej walidacji i przygotowania PNG.
+1. Claude: run the real CLI against a local Anthropic endpoint with a fake login.
+   The request must contain base64 images and only `StructuredOutput`. There must
+   be no Read, Bash, network/MCP tools or source paths. Check reading the last
+   JSONL `result`, `structured_output` and usage.
+2. OpenCode V2: a local OpenAI-compatible provider, isolated test data. The
+   request must contain `tools: []`, the images and the schema; the system
+   instructions must contain the exact prompt. `cwd` and `PWD` point to the same
+   temporary directory. Repository settings, global AGENTS.md, MCP, skills and
+   external plugins must not reach the request. The CLI keeps its own login and
+   session handling. Also check that OPENCODE_CONFIG_DIR and XDG_CONFIG_HOME are
+   temporary, and that OPENCODE_CONFIG and OPENCODE_CLI_CONFIG_CONTENT are not
+   inherited. An inotify monitor on the real ~/.config/opencode must report no
+   opens or reads while the client and server run.
+3. Check a static image, frame order and timestamps, and files with spaces.
+   OpenCode scales only static images to 1440; Python passes Claude a native PNG,
+   but its CLI may downscale images further.
+4. In the test database check saving/skipping a description, a separate effort,
+   invalid JSON and retry. OpenCode: a process error, account limit, missing
+   result or tool attempt must stop the queue without a record. A timeout and an
+   invalid description are per-image failures. Claude: typed limits still trigger
+   waiting without recording an image failure.
+5. OpenCode: a valid complete JSON with exit 0 and no `step_finish` events is also
+   a success (the V2 catch-up path). Usage then stays NULL; with native tokens,
+   keep the whole object and count only an explicit `total`.
+6. Check file cleanup after success/failure, timeout/Ctrl+C, and no Codex
+   regressions after extracting the shared validation and PNG preparation.
 
-Weryfikacja 2026-10-25: `/tmp/check_meme_new_clis.py` uruchomił Claude 2.1.294
-i OpenCode 2.1.3 przeciw lokalnemu serwerowi. Obydwa zwróciły poprawny opis;
-sprawdzono rzeczywiste listy narzędzi (`StructuredOutput` / pusta), dwa obrazy,
-rozdzielczość i brak ścieżek źródłowych. OpenCode zwrócił tekst bez step_finish
-i bez usage; adapter poprawnie go obsłużył. Nie wywoływano usług modeli ani nie
-zmieniano memes.db. `/tmp/check_meme_cli_regressions.py` przeszedł 6 testów
-adapterów i tymczasowej bazy (obrazy/klatki, schema, typed quota Claude,
-resume/skip/retry, izolacja, błędy, usage, sprzątanie). Dotychczasowy
-`/tmp/check_meme_codex_timeout.py` także przeszedł. Formatowanie i lint przeszły.
-Rzeczywiste logowanie i dostępność modelu nadal wymagają próby z kontem użytkownika.
+Verified 2026-10-25: a script ran Claude 2.1.294 and OpenCode 2.1.3 against a
+local server. Both returned a valid description; checked the actual tool lists
+(`StructuredOutput` / empty), two images, resolution and no source paths.
+OpenCode returned text without step_finish and without usage; the adapter
+handled it correctly. No model services were called and the database was not
+changed. A regression script passed 6 tests of the adapters and a temporary
+database (images/frames, schema, Claude typed quota, resume/skip/retry,
+isolation, errors, usage, cleanup). The existing Codex timeout check also
+passed. Formatting and lint passed. Real login and model availability still
+require a trial with a user account.
 
-Weryfikacja katalogu 2026-10-25: `/tmp/check_meme_opencode_model.py` sprawdził
-`opencode/deepseek-v4.1-flash-free` z dokładnym środowiskiem izolowanego adaptera.
-Monitor inotify nie odnotował otwarć ani odczytów ~/.config/opencode podczas
-działania klienta i serwera. Do białej listy modułów dodano opencode.models.dev;
-bez niego wyłączony był także wbudowany katalog modeli. Nie wywołano modelu
-ani nie zmieniono bazy. Konfiguracja OpenCode używa dostępnego darmowego
-DeepSeeka bez niezweryfikowanego wariantu effort.
-Pełny test adaptera z lokalnym providerem także nie odnotował otwarć/odczytów
-tego katalogu; zachował `tools: []`, obrazy i poprawny opis. Z włączonym katalogiem
-modeli uzyskano też step_start/step_finish oraz natywne usage bez jawnego total.
+Catalog verification 2026-10-25: a script checked
+`opencode/deepseek-v4.1-flash-free` with the isolated adapter's exact
+environment. An inotify monitor recorded no opens or reads of ~/.config/opencode
+while the client and server ran. opencode.models.dev was added to the module
+allowlist; without it the built-in model catalog was disabled too. No model was
+called and the database was not changed. The OpenCode configuration uses the
+available free DeepSeek without an unverified effort variant. A full adapter
+test with a local provider also recorded no opens/reads of that directory; it
+kept `tools: []`, the images and a valid description. With the model catalog
+enabled, step_start/step_finish and native usage without an explicit total were
+also obtained.
 
-Weryfikacja błędu darmowej usługi 2026-10-25: metadane sesji potwierdzają
-udaną odpowiedź natywnego build na DeepSeek V4.1 Flash Free / max po nieudanym
-żądaniu adaptera na ten sam model/effort. Trzy minimalne próby bez obrazów i
-bez zmian w memes.db odtworzyły provider.free-limit: custom agent, build oraz
-build z natywnymi modułami agent/identity — zawsze z zakazem narzędzi.
-To pasuje do upstream #51241/#54744; sama nazwa błędu nie dowodzi zużytej puli.
-Nie włączano narzędzi ani dostępu do ~/.config/opencode w celu obejścia odmowy.
+Free-tier error verification 2026-10-25: session metadata confirm a successful
+native build response on DeepSeek V4.1 Flash Free / max after a failed adapter
+request for the same model/effort. Three minimal attempts without images and
+without database changes reproduced provider.free-limit: custom agent, build,
+and build with native agent/identity modules, always with tools forbidden. This
+matches upstream #51241/#54744; the error name alone does not prove a spent
+quota. Tools and access to ~/.config/opencode were not enabled to work around
+the refusal.
 
-## Backend codex-cli
+## codex-cli backend
 
-Profile: sprawdź `config.deepseek.toml`. Dziedziczenie model/effort musi być
-widoczne również dla embed, a jawne ustawienia i CLI overrides mają pierwszeństwo.
-Nie importuj pozostałych ustawień użytkownika, szczególnie uprawnień i helpers.
-Token/header nie może pojawić się w argv ani komunikacie timeoutu. Testowy profil
-z shell_tool=true i danger-full-access nadal ma uruchomić adapter bez narzędzi.
+Profiles: check `config.deepseek.toml`. Inherited model/effort must also be
+visible to embed, and explicit settings and CLI overrides take precedence. Do
+not import the user's other settings, especially permissions and helpers. A
+token/header must not appear in argv or in a timeout message. A test profile
+with shell_tool=true and danger-full-access must still run the adapter without
+tools.
 
-Weryfikacja profilu 2026-10-25: `/tmp/check_meme_codex_profile.py` przeszedł
-4 testy wyboru providera, overrides, odrzucania helpers i przekazywania sekretów
-przez środowisko. `/tmp/check_meme_codex_profile_wire.py` sprawdził rzeczywiste
-CLI, lokalny endpoint, autoryzację fikcyjnym tokenem, model/effort, tools: [],
-obraz i schema. Próba `--limit 1 -v` z rzeczywistym OpenRouterem opisała i zapisała
-obraz vertical/1636857810162.jpg (5 sekund, 4898 tokenów, effort high). Kolejne
-uruchomienia tej konfiguracji powinny pomijać już zapisany wariant.
-Katalog `codex.deepseek-models.json` przeszedł parser Codexa 0.164.0 i ogłasza
-none/low/high/max zgodnie z publicznymi metadanymi OpenRoutera. Instrukcje
-domyślne przechwycono lokalnie z nieznanego wcześniej modelu, aby ich nie zmieniać.
+Profile verification 2026-10-25: a script passed 4 tests of provider selection,
+overrides, rejecting helpers and passing secrets through the environment. A wire
+test checked the real CLI, a local endpoint, authorization with a fake token,
+model/effort, tools: [], image and schema. A `--limit 1 -v` trial with real
+OpenRouter described and saved one image (5 seconds, 4898 tokens, effort high).
+Later runs of this configuration should skip the saved variant. The
+`codex.deepseek-models.json` catalog passed the Codex 0.164.0 parser and
+advertises none/low/high/max in line with OpenRouter's public metadata. The
+default instructions were captured locally from a previously unknown model so
+as not to change them.
 
-Kontrola ograniczeń narzędzi: uruchom adapter z rzeczywistym CLI i lokalnym
-endpointem testowym (fikcyjne logowanie, osobny `CODEX_HOME`). Żądanie do
-`/v1/responses` ma zawierać `tools: []`, obraz/klatki i schemat. Syntetyczna
-odpowiedź ma przejść przez adapter do JSON-a opisu. Sprawdź model z konfiguracji
-oraz model spoza katalogu. Samo sprawdzenie argumentów procesu nie wystarcza.
+Tool restriction check: run the adapter with the real CLI and a local test
+endpoint (fake login, separate `CODEX_HOME`). The request to `/v1/responses`
+must contain `tools: []`, the image/frames and the schema. A synthetic response
+must pass through the adapter into description JSON. Check the model from the
+configuration and a model outside the catalog. Checking process arguments alone
+is not enough.
 
-- [ ] Ustaw `backend = "codex-cli"`, dostępny model wizyjny i prompt w osobnym
-  TOML (`prompt_version = "vcodex1-master"`); `base_url` i `api_key` nie są
-  wymagane. Użyj testowej bazy.
-- [ ] `model_instructions_file` wskazuje plik z dokładną treścią wybranego promptu.
-  Stdin zawiera wyłącznie polecenie dla mema i informacje o klatkach; stały prompt
-  nie jest w nim powtarzany. Zmiana `prompt_version` nadal tworzy osobny wariant.
-- [ ] Nagłówek `-v` pokazuje `[N tokens]` jako sumę input/output z `turn.completed`;
-  cached input nie jest doliczane drugi raz. Przy braku usage licznik jest pomijany.
-- [ ] `describe --limit 1 -v` zapisuje surowy JSON; drugi przebieg go pomija.
-  `--model`, `--effort`, `--path` i `--retry-failed` działają jak wcześniej.
-- [ ] Sprawdź PNG/JPEG oraz animacje GIF/WebP/APNG, także ścieżkę ze spacjami.
-  Wszystkie wybrane klatki trafiają do modelu w kolejności chronologicznej.
-- [ ] Błąd procesu, limit konta i brak końcowej odpowiedzi zatrzymują
-  przebieg bez rekordu dla bieżącego obrazu. Ponowne uruchomienie go podejmuje.
-- [ ] Timeout zapisuje `failed_describe` z komunikatem o przekroczeniu czasu
-  i przechodzi do następnego obrazu. `--retry-failed` ponawia tę próbę.
-- [ ] Niepoprawny końcowy JSON, powtórzone keywords, zły humor_type lub uszkodzony
-  obraz dają `failed_describe`; pozostałe obrazy są przetwarzane dalej.
-- [ ] Pierwszy Ctrl+C kończy i zapisuje bieżący opis; drugi przerywa proces.
-  Timeout usuwa też procesy potomne. Pliki tymczasowe są sprzątane.
-- [ ] Backend Claude nadal odczytuje `structured_output` i rozpoznaje swój limit
-  użycia po polach typowanych, mimo wspólnej funkcji uruchamiania procesu.
+- [ ] Set `backend = "codex-cli"`, an available vision model and a prompt in a
+  separate TOML (`prompt_version = "vcodex1-master"`); `base_url` and `api_key`
+  are not required. Use the test database.
+- [ ] `model_instructions_file` points to a file with the exact text of the
+  selected prompt. Stdin contains only the request for the meme and frame
+  information; the fixed prompt is not repeated there. Changing
+  `prompt_version` still creates a separate variant.
+- [ ] The `-v` header shows `[N tokens]` as the input/output sum from
+  `turn.completed`; cached input is not counted twice. Without usage the counter
+  is omitted.
+- [ ] `describe --limit 1 -v` saves the raw JSON; a second run skips it.
+  `--model`, `--effort`, `--path` and `--retry-failed` work as before.
+- [ ] Check PNG/JPEG and GIF/WebP/APNG animations, also a path with spaces.
+  All selected frames reach the model in chronological order.
+- [ ] A process error, account limit and missing final response stop the run
+  without a record for the current image. Running again picks it up.
+- [ ] A timeout records `failed_describe` with a timeout message and moves on to
+  the next image. `--retry-failed` retries it.
+- [ ] Invalid final JSON, repeated keywords, a wrong humor_type or a corrupted
+  image give `failed_describe`; the remaining images are still processed.
+- [ ] The first Ctrl+C finishes and saves the current description; the second
+  aborts the process. A timeout also kills child processes. Temporary files are
+  cleaned up.
+- [ ] The Claude backend still reads `structured_output` and recognizes its usage
+  limit by typed fields, despite the shared process-launching function.
 
-Weryfikacja 2026-10-09: skrypt `/tmp/check_codex_backend.py` przeszedł testy
-adaptera z symulowaną odpowiedzią CLI (argumenty, GIF/PNG, schemat, zachowanie
-surowego JSON, walidacja i sprzątanie), tymczasowej bazy (błąd bez wpisu,
-wznowienie/pominięcie, wariant effort i błędny JSON), regresji odpowiedzi/limitu
-Claude oraz rzeczywistego subprocessu (stdin/stdout/timeout). Przerwanie procesu
-sprawdzono z mockiem. Nie wykonano opisu przez usługę Codex; logowanie,
-dostępność wybranego modelu i pełny przebieg sieciowy wymagają próby `--limit 1`.
+Verified 2026-10-09: a script passed adapter tests with a simulated CLI response
+(arguments, GIF/PNG, schema, preserving raw JSON, validation and cleanup), a
+temporary database (error without a row, resume/skip, effort variant and invalid
+JSON), Claude response/limit regressions and a real subprocess
+(stdin/stdout/timeout). Process interruption was checked with a mock. No
+description was made through the Codex service; login, availability of the
+chosen model and the full network path require a `--limit 1` trial.
 
-Weryfikacja przejścia na instructions file: adapter Codexa z symulowaną
-odpowiedzią dostał dokładną treść `vcodex1-master.txt` w pliku UTF-8 wskazanym
-przez `model_instructions_file`. Sprawdzono statyczny obraz i animację:
-stdin zawierał tylko zadanie oraz timestampy klatek, a plik instrukcji sam prompt.
-Sprawdzono skalowanie obrazu statycznego, sprzątanie plików i transporty pozostałych
-backendów. Formatowanie i lint przeszły. Nie wykonano wywołania usługi Codex.
+Instructions-file switch verification: the Codex adapter with a simulated
+response received the exact text of `vcodex1-master.txt` in a UTF-8 file passed
+via `model_instructions_file`. Checked a static image and an animation: stdin
+contained only the task and frame timestamps, and the instructions file only
+the prompt. Checked static image scaling, file cleanup and the other backends'
+transports. Formatting and lint passed. The Codex service was not called.
 
-## Wspólne klatki animacji
+## Shared animation frames
 
-- [ ] Zawsze pierwsza klatka (GIF i wideo, także po przerzedzeniu do 12).
-- [ ] Animacja z cięciami: jedna klatka ze środka każdego ujęcia (`scene > 0.15`).
-- [ ] Bez cięć: klatka ze środka i ostatnia; ten sam indeks klatki tylko raz.
-- [ ] Zmienne czasy klatek w GIF/WebP/APNG i APNG z osobnym podglądem statycznym.
-- [ ] Klatki zachowują natywną rozdzielczość; statyczne obrazy nadal są skalowane
-  na ścieżkach HTTP/Codex. Pliki tymczasowe znikają po żądaniu/błędzie.
-- [ ] Brak `ffmpeg` lub błąd ekstrakcji zapisuje błąd tylko danego obrazu;
-  kolejny obraz statyczny nadal jest opisywany.
-- [ ] Wideo (mp4/webm): skan liczy phash ze środkowej klatki, uszkodzony plik
-  jest pomijany, ponowny skan nic nie dodaje. Opis: cięcia `scene > 0.3`,
-  wybór klatek jak w GIF, maksymalnie 12 klatek, w prompcie informacja, że
-  ścieżka dźwiękowa nie została dołączona.
-- [ ] `[transcribe]`: mowa trafia do promptu, sama muzyka daje notkę „nie
-  rozpoznała mowy”, film bez audio — „nie ma ścieżki dźwiękowej”; transkrypcja
-  zapisuje się raz na hash i jest używana ponownie; niedostępna usługa zatrzymuje
-  przebieg bez wiersza w `descriptions`; stara baza dostaje `audio_transcripts`.
-- [ ] GUI: podgląd wideo pokazuje pierwszą klatkę z dopiskiem „film”; przyciski
-  `<` / `>` (wideo i animacje) przełączają klatki identyczne z wysyłanymi do modelu;
-  Ctrl+C kopiuje plik jako `video/*`, Ctrl+O otwiera odtwarzacz przez `xdg-open`.
+- [ ] Always the first frame (GIF and video, also after thinning to 12).
+- [ ] Animation with cuts: one frame from the middle of each shot (`scene > 0.15`).
+- [ ] No cuts: the middle and last frame; the same frame index only once.
+- [ ] Variable frame durations in GIF/WebP/APNG and APNG with a separate static
+  preview.
+- [ ] Frames keep native resolution; static images are still scaled on the
+  HTTP/Codex paths. Temporary files disappear after the request/error.
+- [ ] Missing `ffmpeg` or an extraction error records an error for that image
+  only; the next static image is still described.
+- [ ] Video (mp4/webm): the scan computes the phash from the middle frame, a
+  corrupted file is skipped, a repeated scan adds nothing. Description: cuts at
+  `scene > 0.3`, frame selection as for GIFs, at most 12 frames, and the prompt
+  notes that the soundtrack was not included.
+- [ ] `[transcribe]`: speech reaches the prompt, music alone gives a "no speech
+  recognised" note, a video without audio "no audio stream"; the transcript is
+  saved once per hash and reused; an unavailable service stops the run without a
+  row in `descriptions`; an old database gets `audio_transcripts`.
+- [ ] GUI: a video preview shows the first frame with a "video" note; the `<` /
+  `>` buttons (video and animations) step through the same frames that are sent
+  to the model; Ctrl+C copies the file as `video/*`, Ctrl+O opens a player via
+  `xdg-open`.
 
-Weryfikacja 2026-11-12: skan kopii mp4/webm/gif (także ścieżka ze spacją,
-identyczna kopia i uszkodzony mp4), wybór klatek na 9 filmach z kolekcji,
-porównanie wyboru klatek z poprzednią wersją na 89 GIF/WebP (bez różnic),
-opis jednego mp4 przez `claude-code-cli`, embed i wyszukanie go. GUI
-sprawdzono tylko na poziomie funkcji wyciągającej klatkę, bez okna.
-Transkrypcja: lokalna usługa asr-whisper-service (`/inference`) na filmie z mową,
-z samą muzyką i bez audio; migracja starej bazy; zatrzymanie przy wyłączonej
-usłudze; opis dwóch filmów przez `claude-code-cli` z transkrypcją.
+Verified 2026-11-12: scanning copies of mp4/webm/gif (including a path with a
+space, an identical copy and a corrupted mp4), frame selection on 9 videos from
+the collection, comparing frame selection with the previous version on 89
+GIF/WebP files (no differences), describing one mp4 through `claude-code-cli`,
+embedding and finding it. The GUI was checked only at the level of the
+frame-extraction function, without a window. Transcription: the local
+asr-whisper-service (`/inference`) on a video with speech, with music only and
+without audio; migrating an old database; stopping with the service down;
+describing two videos through `claude-code-cli` with a transcript.
 
-Weryfikacja 2026-10-09: `/tmp/check_meme_animation_frames.py` użył prawdziwego
-FFmpeg do GIF/WebP/APNG (cięcia, brak cięć, zmienne czasy, natywna rozdzielczość,
-APNG z osobnym podglądem, ścieżki ze spacjami). Transporty HTTP/Claude/Codex
-sprawdzono z symulowanymi odpowiedziami modeli i tymczasową bazą, także kolejność,
-timestampy, zapis JSON, sprzątanie oraz kontynuację po braku FFmpeg.
-Ekstrakcja przeszła też na trzech GIF-ach z rzeczywistej kolekcji (20, 24 i 51
-klatek źródłowych). Nie wykonano płatnych wywołań modeli ani zmian w `memes.db`.
+Verified 2026-10-09: a script used real FFmpeg on GIF/WebP/APNG (cuts, no cuts,
+variable durations, native resolution, APNG with a separate preview, paths with
+spaces). The HTTP/Claude/Codex transports were checked with simulated model
+responses and a temporary database, including order, timestamps, JSON saving,
+cleanup and continuing without FFmpeg. Extraction also passed on three GIFs
+from the real collection (20, 24 and 51 source frames). No paid model calls
+were made and the database was not changed.

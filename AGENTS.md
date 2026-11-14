@@ -364,8 +364,8 @@ means retrying a failed row overwrites the old failure cleanly.
   config and CLI model/effort overrides win; embed gets the same resolved tuple.
   User permissions, instructions, hooks and tools remain ignored. Provider
   helpers are rejected. Literal bearer/header credentials travel via environment
-  variables, outside argv. `config.deepseek.toml` uses the user's OpenRouter
-  profile; one real DeepSeek V4.1 Flash/high image succeeded. Local CLI wire
+  variables, outside argv. `config.deepseek.toml` uses a local OpenRouter
+  Codex profile; one real DeepSeek V4.1 Flash/high image succeeded. Local CLI wire
   verification confirmed tools: [], image, schema and effort. The separate
   `codex.deepseek-models.json` catalog enables the native CLI's none/low/high/max
   effort selector and preserves its default instructions (0.164.0). The meme
@@ -685,7 +685,8 @@ constant, FTS weighting) are made on the sample, never on the full run.
 **Memes quoted inside the prompt are burned as evaluation samples.** These
 memes from the collection appear in `prompts/` verbatim, so any model
 describing them is copying the prompt rather than reasoning, and their
-descriptions look good for reasons that do not generalise:
+descriptions look good for reasons that do not generalise. Their collection
+paths are kept out of the repository, in the git-ignored `burned.md`, when present:
 
 - `045f3bf5` — the Cowboy Bebop line in the `scene`
   bullet's `Dobrze:` example; present since `vgrok3`
